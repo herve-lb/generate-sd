@@ -8,6 +8,7 @@ Sommaire :
 2. [Écrire l'image sur une carte SD](#2-écrire-limage-sur-une-carte-sd)
 3. [Modifications appliquées à l'image](#3-modifications-appliquées-à-limage)
 4. [Répertoires utiles sur la carte](#4-répertoires-utiles-sur-la-carte)
+5. [Poste Ubuntu et connexion SSH à une borne](#5-poste-ubuntu-et-connexion-ssh-à-une-borne)
 
 ---
 
@@ -15,7 +16,7 @@ Sommaire :
 
 ### 1.1 Prérequis
 
-- Un poste **Linux** : le script utilise `losetup` et `mount`, et ne fonctionne pas sous macOS ni Windows.
+- Un poste **Linux** : le script utilise `losetup` et `mount`, et ne fonctionne pas sous macOS ni Windows. Pour préparer un poste Ubuntu, voir la [section 5](#5-poste-ubuntu-et-connexion-ssh-à-une-borne).
 - `losetup` installé (paquet `util-linux`) et un compte avec les droits `sudo`.
 - De la place disque : l'image d'origine est copiée dans `$HOME/out.img`, puis vers le fichier résultat. Il faut donc environ deux fois la taille de l'image.
 
@@ -399,11 +400,187 @@ Ces remarques viennent de la lecture du script. Elles ne changent pas son compor
 
 ## 4. Répertoires utiles sur la carte
 
-| Contenu | Répertoire |
-|---|---|
-| Fichiers de configuration des manettes | `/opt/retropie/configs/all/retroarch/autoconfig` |
-| Script de démarrage (`autostart.sh`) | `/opt/retropie/configs/all` |
-| ROMs | `/home/pi/RetroPie/roms/<système>` |
-| Émulateurs disponibles par système | `/opt/retropie/configs/<système>/emulators.cfg` |
+Cette section liste les fichiers à connaître pour faire des réglages et des tests en direct sur une borne par SSH (voir la [section 5](#5-poste-ubuntu-et-connexion-ssh-à-une-borne) pour la connexion). Les modifications faites ainsi sur une borne sont perdues à la prochaine génération de l'image. Pour les garder, reportez-les dans `generate-generic-image.sh` ou dans les fichiers de `work/origin/`.
 
-L'accès SSH est activé : `ssh pi@<adresse de la borne>`. Le mot de passe par défaut de RetroPie est `raspberry`, sauf s'il a été changé dans l'image d'origine.
+L'utilisateur est `pi`. Le mot de passe par défaut de RetroPie est `raspberry`, sauf s'il a été changé dans l'image d'origine. Les fichiers de `/boot` et `/etc` se modifient avec `sudo`.
+
+### 4.1 Démarrage et matériel (partition `/boot`)
+
+| Fichier | Contenu | Prise en compte |
+|---|---|---|
+| `/boot/config.txt` | Affichage (overscan, rotation, mode HDMI, sortie composite), Bluetooth, `boot_delay` | Au redémarrage |
+| `/boot/cmdline.txt` | Paramètres du noyau (console, messages de démarrage). **Une seule ligne** : ne pas ajouter de retour à la ligne | Au redémarrage |
+
+### 4.2 Lancement du jeu
+
+| Fichier | Contenu |
+|---|---|
+| `/opt/retropie/configs/all/autostart.sh` | Lanceur exécuté à la connexion automatique de `pi` sur l'écran : jeu, émulateur, système (voir [§3.3](#33-mode-spécifique--s-rom)) |
+| `/etc/profile.d/10-retropie.sh` | Appelle `autostart.sh` quand `pi` se connecte sur l'écran (tty1) |
+| `/opt/retropie/configs/<système>/emulators.cfg` | Émulateurs installés pour un système, avec leur ligne de commande, et l'émulateur par défaut (`default`) |
+| `/opt/retropie/configs/all/runcommand.cfg` | Réglages de runcommand (menu de lancement, joystick) |
+| `/etc/rc.local` | Commandes lancées en fin de démarrage (effacement de la console) |
+
+### 4.3 RetroArch (image, son, manettes)
+
+| Fichier ou répertoire | Contenu |
+|---|---|
+| `/opt/retropie/configs/all/retroarch.cfg` | Réglages RetroArch **communs à tous les systèmes** : lissage, shader, messages à l'écran… |
+| `/opt/retropie/configs/<système>/retroarch.cfg` | Réglages **propres à un système**. Ils ne sont pris en compte que s'ils sont placés **au-dessus** de la ligne `#include "/opt/retropie/configs/all/retroarch.cfg"` |
+| `/opt/retropie/emulators/retroarch/retroarch.cfg` | Configuration par défaut de RetroArch. Le profil `borne_pacman_mo5` y règle le viewport |
+| `/opt/retropie/configs/all/retroarch-core-options.cfg` | Options des émulateurs (cores) : palette Game Boy, réglages MAME… |
+| `/opt/retropie/configs/all/retroarch/autoconfig/` | Configurations des manettes (`.cfg`). `/opt/retropie/configs/all/retroarch-joypads` est un lien vers ce répertoire |
+| `/opt/retropie/configs/all/retroarch/shaders/` | Shaders, dont `crt-pi.glslp` et `crt-pi-vertical.glslp` (option `-l`) |
+| `/etc/asound.conf` | Sortie son par défaut (jack ou HDMI) |
+
+### 4.4 Jeux et sauvegardes
+
+| Répertoire | Contenu |
+|---|---|
+| `/home/pi/RetroPie/roms/<système>/` | ROMs. Les **sauvegardes des jeux** (`.srm`, par exemple pour Zelda) sont écrites à côté de la ROM |
+| `/home/pi/RetroPie/BIOS/` | BIOS des systèmes qui en ont besoin (PC Engine CD, PlayStation…) |
+| `/media/usb0/` | Clé USB, en mode générique |
+
+### 4.5 Système
+
+| Fichier ou répertoire | Contenu |
+|---|---|
+| `/etc/systemd/system/` | Services activés au démarrage (liens dans `*.target.wants/`). Voir [§3.1](#31-modifications-communes--g-et--s) pour ceux qui sont désactivés |
+| `/etc/systemd/system/getty@tty1.service.d/autologin.conf` | Connexion automatique de `pi` sur l'écran |
+| `/etc/dhcpcd.conf` | Configuration réseau (DHCP) |
+
+### 4.6 Tester une modification sans redémarrer
+
+1. Arrêtez le jeu : `killall retroarch`.
+2. Modifiez le fichier, par exemple `nano /opt/retropie/configs/all/retroarch.cfg`.
+3. Relancez la connexion automatique de l'écran, ce qui relance `autostart.sh` et donc le jeu :
+   ```
+   sudo systemctl restart getty@tty1
+   ```
+
+Après la modification d'un fichier de service (`/etc/systemd/system/...`, par exemple `autologin.conf`), rechargez la configuration de systemd avant de relancer le service. Sinon, systemd affiche l'avertissement « changed on disk. Run 'systemctl daemon-reload' » et garde l'ancienne version :
+```
+sudo systemctl daemon-reload
+sudo systemctl restart getty@tty1
+```
+
+Les fichiers de `/boot` ne sont pris en compte qu'après un redémarrage : `sudo reboot`.
+
+Pour diagnostiquer :
+
+| Commande | Usage |
+|---|---|
+| `systemd-analyze` et `systemd-analyze critical-chain getty@tty1.service` | Durée du démarrage et ce qui retarde le lancement du jeu |
+| `systemctl list-unit-files --state=enabled` | Services activés |
+| `journalctl -b` | Journal du démarrage en cours |
+| `cat /dev/shm/runcommand.log` | Journal du dernier lancement par runcommand (seulement sans option `-e`) |
+| `grep Name /proc/bus/input/devices` | Nom des manettes branchées (la valeur de `input_device`) |
+| `jstest --event /dev/input/js0` | Numéros des boutons et axes d'une manette |
+| `vcgencmd measure_temp` et `vcgencmd get_throttled` | Température, et sous-tension (`0x0` = aucun problème) |
+
+---
+
+## 5. Poste Ubuntu et connexion SSH à une borne
+
+### 5.1 Préparer le poste Ubuntu
+
+Les outils nécessaires sont presque tous installés d'origine sur Ubuntu. Pour être sûr de les avoir :
+
+```
+sudo apt install git util-linux e2fsprogs python3 openssh-client
+```
+
+| Paquet | Utilisé pour |
+|---|---|
+| `util-linux` | `losetup`, `mount`, `lsblk` : génération des images et écriture sur carte SD |
+| `e2fsprogs` | `debugfs` : lire le contenu d'une image sans la monter (facultatif) |
+| `python3` | `create-controller-cfg.py` (configuration des manettes) |
+| `openssh-client` | `ssh` et `scp` vers les bornes |
+
+Il faut aussi un compte avec les droits `sudo`.
+
+Pour `create-controller-cfg.py`, Ubuntu donne normalement accès aux manettes à l'utilisateur connecté à la session graphique. Si l'outil ne trouve pas la manette, lancez-le depuis la session graphique, pas par SSH, ou avec `sudo`.
+
+### 5.2 Ce qu'il faut savoir sur le réseau des bornes
+
+- La borne obtient son adresse par DHCP (`dhcpcd`). Elle annonce le nom `retropie` au serveur DHCP.
+- `avahi-daemon` est désactivé dans les images (voir [§3.1](#31-modifications-communes--g-et--s)) : **le nom `retropie.local` ne fonctionne pas**. Il faut utiliser l'adresse IP.
+- L'adresse IP n'est plus affichée à l'écran au démarrage.
+- La borne n'attend plus le réseau pour lancer le jeu : on peut brancher le câble avant ou après le démarrage.
+
+### 5.3 Câble Ethernet direct entre le PC et la borne (recommandé en exposition)
+
+Le PC sert de serveur DHCP pour la borne, grâce au mode « partagé » de NetworkManager. Il n'y a besoin ni de routeur ni de box.
+
+Le plus simple est d'utiliser **un adaptateur Ethernet USB dédié aux bornes**. La prise Ethernet principale du PC reste alors sur le réseau habituel, et la configuration partagée ne s'applique qu'à cet adaptateur.
+
+#### Configuration (une seule fois)
+
+1. Branchez l'adaptateur USB et repérez son interface. Un adaptateur USB s'appelle `enx…` suivi de son adresse MAC, par ex. `enx9cebe80cf5a9` :
+   ```
+   nmcli device status
+   ```
+   **L'interface d'un adaptateur USB n'apparaît que lorsqu'il est branché.**
+2. Créez une connexion partagée sur cette interface, activée automatiquement dès que l'adaptateur est branché :
+   ```
+   nmcli connection add type ethernet ifname <interface> con-name borne-mo5 \
+     ipv4.method shared ipv6.method ignore connection.autoconnect yes
+   ```
+   On peut aussi le faire dans l'interface graphique : Paramètres → Réseau → l'adaptateur → IPv4 → « Partagée avec d'autres ordinateurs ». La connexion porte alors un autre nom, souvent celui de l'interface : `nmcli connection show` l'affiche. Vérifiez qu'elle se réactive toute seule :
+   ```
+   nmcli connection modify <nom de la connexion> connection.autoconnect yes
+   ```
+
+#### À chaque utilisation
+
+1. Branchez l'adaptateur USB sur le PC, puis le câble entre l'adaptateur et la borne.
+2. Vérifiez que la connexion partagée est active :
+   ```
+   nmcli device status
+   ```
+   La ligne de l'adaptateur doit indiquer `connected` avec le nom de la connexion partagée. Si elle indique `disconnected`, activez-la : `nmcli connection up <nom de la connexion>`. Le PC prend alors l'adresse `10.42.0.1`.
+
+   Pour vérifier le lien physique, `cat /sys/class/net/<interface>/carrier` doit afficher `1`, et `cat /sys/class/net/<interface>/speed` affiche `100` avec un Pi 2 ou 3. Le voyant de certains adaptateurs ne clignote pas même quand le lien est actif : ce n'est pas un signe de panne.
+3. Démarrez (ou redémarrez) la borne, pour qu'elle demande une adresse au PC. Après quelques secondes, retrouvez son adresse :
+   ```
+   ip neigh show dev <interface> | grep -v FAILED
+   ```
+   L'adresse MAC d'un Raspberry Pi commence par `b8:27:eb`, `dc:a6:32`, `e4:5f:01`, `d8:3a:dd` ou `2c:cf:67`. Les baux DHCP du PC donnent aussi l'adresse et le nom (`retropie`), mais ils ne sont lisibles qu'avec `sudo` :
+   ```
+   sudo cat /var/lib/NetworkManager/dnsmasq-<interface>.leases
+   ```
+   NetworkManager distribue les adresses de `10.42.0.10` à `10.42.0.254`. Une borne garde en général la même adresse d'un démarrage à l'autre.
+4. Connectez-vous :
+   ```
+   ssh pi@10.42.0.x
+   ```
+
+#### En cas de problème
+
+- **La borne n'apparaît pas dans `ip neigh` :** la connexion partagée n'était sans doute pas active quand la borne a démarré. Activez-la, puis redémarrez la borne. Le premier démarrage d'une carte neuve redémarre aussi une fois tout seul (agrandissement de la partition) : attendez que le jeu soit affiché.
+- **Le pare-feu `ufw`**, s'il est activé sur le PC, peut bloquer le DHCP. Autorisez l'interface avec `sudo ufw allow in on <interface>`.
+- **Pour savoir si SSH répond sans se connecter :** `ssh -o ConnectTimeout=5 pi@10.42.0.x true`. Un message `Connection timed out` indique un problème réseau. Une demande de mot de passe indique que SSH fonctionne.
+
+### 5.4 Borne branchée sur un réseau avec box ou routeur
+
+La borne reçoit son adresse de la box. Pour la trouver :
+
+- consultez la liste des appareils connectés de la box : la borne apparaît sous le nom `retropie` ;
+- ou balayez le réseau depuis le PC (paquet `nmap`) :
+  ```
+  sudo nmap -sn 192.168.1.0/24      # adapter au réseau local
+  ```
+  La borne apparaît avec un fabricant « Raspberry Pi » à côté de son adresse MAC.
+
+### 5.5 Astuces SSH
+
+- **Message « REMOTE HOST IDENTIFICATION HAS CHANGED » :** chaque carte génère ses propres clés SSH au premier démarrage. Si une autre carte a déjà eu la même adresse IP, effacez l'ancienne clé avant de vous connecter :
+  ```
+  ssh-keygen -R 10.42.0.x
+  ```
+- **Ne plus taper le mot de passe :** `ssh-copy-id pi@10.42.0.x`. Ce réglage est propre à la carte : il est perdu si la carte est regénérée.
+- **Copier des fichiers**, par exemple pour récupérer les configurations de manettes de la borne :
+  ```
+  scp "pi@10.42.0.x:/opt/retropie/configs/all/retroarch/autoconfig/*.cfg" .
+  ```
+- **Arrêter le jeu pour travailler sur la borne :** `killall retroarch`. Pour éteindre proprement la borne : `sudo poweroff`.
