@@ -1,2 +1,2 @@
-echo "../../source/generate-image/generate-generic-image.sh -d -i ../origin/origin.img -o pocky-rocky-snes-arcade1up.img -s ../origin/game-to-install/snes/Pocky-Rocky.smc -c ../origin/game-to-install/snes/USB gamepad.cfg -x -x \"borne_arcade_1_up\""
-../../source/generate-image/generate-generic-image.sh -d -i ../origin/origin.img -o pocky-rocky-snes-arcade1up.img -s ../origin/game-to-install/snes/Pocky-Rocky.smc -c ../origin/game-to-install/snes/USB\ gamepad.cfg -x "borne_arcade_1_up"
+echo "../../source/generate-image/generate-generic-image.sh -d -i ../origin/origin.img -o pocky-rocky-snes-arcade1up.img -s ../origin/game-to-install/snes/Pocky-Rocky.smc -c ../origin/game-to-install/nes/USB-gamepad.cfg -x -x \"borne_arcade_1_up\""
+../../source/generate-image/generate-generic-image.sh -d -i ../origin/origin.img -o pocky-rocky-snes-arcade1up.img -s ../origin/game-to-install/snes/Pocky-Rocky.smc -c ../origin/game-to-install/nes/USB-gamepad.cfg -x "borne_arcade_1_up"
