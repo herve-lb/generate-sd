@@ -19,6 +19,7 @@ AUTOLAUNCH_DIRECTORY="${WORKING_DIRECTORY}/opt/retropie/configs/all"
 AUTOLAUNCH_SCRIPT_FILENAME_GenericLaunch="10-retropie.sh.generic"
 AUTOLAUNCH_SCRIPT_FILENAME_SpecificLaunch="10-retropie.sh.specific"
 JOYPAD_CONFIGURATION_DIRECTORY="${WORKING_DIRECTORY}/opt/retropie/configs/all/retroarch/autoconfig"
+SHADERS_DIRECTORY="/opt/retropie/configs/all/retroarch/shaders"
 TEMP_IMAGE="${HOME}/out.img"
 
 # globals ################################################################
@@ -37,6 +38,9 @@ samples_dir=
 controller_file=
 emulatorname=
 specific_console=
+scanlines=
+nosmooth=
+shader_file=
 
 # OS pre-requisite #######################################################
 
@@ -60,6 +64,18 @@ function check_parameters() {
   if ! [[ -z "${specific}" ]] && ! [[ -z "${generic}" ]]; then
     usage
     exitonerror "Il faut choisir entre mode générique ou spécifique"
+  fi
+
+  # check scanlines option and select the matching shader
+  if ! [[ -z "${scanlines}" ]]; then
+    case "${scanlines}" in
+      scanlines_horizontal) shader_file="crt-pi.glslp" ;;
+      scanlines_vertical) shader_file="crt-pi-vertical.glslp" ;;
+      *)
+        usage
+        exitonerror "Option -l inconnue : ${scanlines} (valeurs possibles : scanlines_horizontal, scanlines_vertical)"
+        ;;
+    esac
   fi
 
   # check if the user specify a good filename for the game
@@ -307,9 +323,9 @@ function apply_common_modifications_on_SD () {
   local filename="${BOOT_DIRECTORY}/cmdline.txt"
   trace "## Apply modifications to ${filename}"
 
-  # replace "console=tty1" by "console=tty3 logo.nologo loglevel=3 vt.global_cursor_default=0"
+  # replace "console=tty1" by "console=tty3 logo.nologo loglevel=3 vt.global_cursor_default=0 plymouth.enable=0"
   local pattern_to_remove="console=tty1"
-  local pattern_to_add="console=tty3 logo.nologo loglevel=3 vt.global_cursor_default=0"
+  local pattern_to_add="console=tty3 logo.nologo loglevel=3 vt.global_cursor_default=0 plymouth.enable=0"
 
   #command : sed '0,/tata/ s//zaza/' in.txt
   trace "replace ${pattern_to_remove} by ${pattern_to_add} in file ${filename}"
@@ -348,10 +364,6 @@ function apply_common_modifications_on_SD () {
   # Disable large rainbow screen on initial boot
   trace "add disable_splash=1"
   sudo sed -i '$adisable_splash=1' "${filename}"
-
-  # add "plymouth.enable=0"
-  trace "add plymouth.enable=0"
-  sudo sed -i '$aplymouth.enable=0' "${filename}"
 
   # disable warnings such as undervoltage/overheating
   trace "add avoid_warnings=1"
@@ -442,6 +454,30 @@ function apply_common_modifications_on_SD () {
   trace "set video_smooth to true in file ${filename}"
   sudo sed -i '/video_smooth/ s/false/true/g' "${filename}"
 
+  #     No smoothing for sharp pixels (option -n, or needed by scanlines)
+  if ! [[ -z "${nosmooth}" ]] || ! [[ -z "${shader_file}" ]]; then
+    # remove existing lines (commented or not) then add the new value
+    trace "set video_smooth to false in file ${filename}"
+    sudo sed -i '/^#* *video_smooth *=/d' "${filename}"
+    sudo sed -i '$avideo_smooth = "false"' "${filename}"
+  fi
+
+  #     Scanlines with a crt-pi shader
+  if ! [[ -z "${shader_file}" ]]; then
+    trace "## Scanlines ${scanlines} with shader ${SHADERS_DIRECTORY}/${shader_file}"
+    if ! [[ -f "${WORKING_DIRECTORY}${SHADERS_DIRECTORY}/${shader_file}" ]]; then
+      exitonerror_cleanneeded "Shader introuvable dans l'image : ${SHADERS_DIRECTORY}/${shader_file}"
+    fi
+
+    # remove existing lines (commented or not) then add the new values
+    trace "set video_shader_enable to true in file ${filename}"
+    sudo sed -i '/^#* *video_shader_enable *=/d' "${filename}"
+    sudo sed -i '$avideo_shader_enable = "true"' "${filename}"
+    trace "set video_shader to ${SHADERS_DIRECTORY}/${shader_file} in file ${filename}"
+    sudo sed -i '/^#* *video_shader *=/d' "${filename}"
+    sudo sed -i '$avideo_shader = "'"${SHADERS_DIRECTORY}/${shader_file}"'"' "${filename}"
+  fi
+
   #
   # Splash screen management
   #
@@ -512,6 +548,10 @@ function create_Generic_SD () {
   trace "## Autolaunch script"
   trace "Copy autolaunch script from ${filename} to ${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
   sudo cp "${filename}" "${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
+  # give the script the same owner as its directory (pi) instead of root
+  autolaunch_user_group="$(stat -c "%U:%G" ${AUTOLAUNCH_DIRECTORY})"
+  trace "chown ${autolaunch_user_group} ${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
+  sudo chown "${autolaunch_user_group}" "${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
 }
 
 function create_Specific_SD () {
@@ -533,6 +573,10 @@ function create_Specific_SD () {
   trace "## Autolaunch script"
   trace "Copy autolaunch script from ${filename} to ${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
   sudo cp "${filename}" "${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
+  # give the script the same owner as its directory (pi) instead of root
+  autolaunch_user_group="$(stat -c "%U:%G" ${AUTOLAUNCH_DIRECTORY})"
+  trace "chown ${autolaunch_user_group} ${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
+  sudo chown "${autolaunch_user_group}" "${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
 
   #
   # game installation
@@ -551,6 +595,23 @@ function create_Specific_SD () {
   else
     read -p "Le jeu est dans un répertoire core inconnu. Time to check " -n1 -s
     exitonerror_cleanneeded "Le jeu est dans un répertoire core inconnu : ${corename}"
+  fi
+
+  # check the emulator so that runcommand never asks to choose one at boot
+  filename="${WORKING_DIRECTORY}/opt/retropie/configs/${corename}/emulators.cfg"
+  trace "check emulator in ${filename}"
+  if ! [[ -f "${filename}" ]]; then
+    exitonerror_cleanneeded "Aucun émulateur installé pour ${corename} : ${filename} introuvable"
+  fi
+  if ! [[ -z "${emulatorname}" ]]; then
+    if ! grep -q "^${emulatorname} *=" "${filename}"; then
+      exitonerror_cleanneeded "L'émulateur ${emulatorname} n'est pas installé pour ${corename} (voir ${filename})"
+    fi
+  else
+    if ! grep -q "^default *= *\"..*\"" "${filename}"; then
+      exitonerror_cleanneeded "Pas d'émulateur par défaut pour ${corename} : un choix serait demandé au démarrage. Utiliser l'option -e (voir ${filename})"
+    fi
+    trace "default emulator : $(grep "^default *=" "${filename}")"
   fi
 
   # Samples installation
@@ -594,14 +655,14 @@ function create_Specific_SD () {
 function usage() {
   echo
   echo "USAGE:"
-  echo "image générique: $(basename $0) -g -i \"image Retropie d'origine\" -o \"image à générer\""
-  echo "image spécifique: $(basename $0) -s \"fichier du jeu\" (-p \"répertoire des samples\") (-e \"nom de l'émulateur\") (-c \"fichier controller à installer\") (-x \"nom de la console dont il faut appliquer les paramètres spécifiques) -i \"image Retropie d'origine\" -o \"image à générer\""
+  echo "image générique: $(basename $0) -g (-x \"nom de la console\") (-l scanlines_horizontal|scanlines_vertical) (-n) -i \"image Retropie d'origine\" -o \"image à générer\""
+  echo "image spécifique: $(basename $0) -s \"fichier du jeu\" (-p \"répertoire des samples\") (-e \"nom de l'émulateur\") (-c \"fichier controller à installer\") (-x \"nom de la console dont il faut appliquer les paramètres spécifiques) (-l scanlines_horizontal|scanlines_vertical) (-n pas de lissage) -i \"image Retropie d'origine\" -o \"image à générer\""
   echo
 }
 
 function get_options() {
 
-  while getopts "gc:e:p:s:i:o:x:dh" option ;
+  while getopts "gc:e:p:s:i:o:x:l:ndh" option ;
   do
     trace "getopts OPTIND=$OPTIND, Option=$option, OPTARG=$OPTARG, OPTERR=$OPTERR"
     case "${option}" in
@@ -656,6 +717,16 @@ function get_options() {
       x)
         trace "specific instructions for specifics consoles"
         specific_console=${OPTARG}
+        ;;
+
+      l)
+        trace "Scanlines"
+        scanlines=${OPTARG}
+        ;;
+
+      n)
+        trace "No smoothing"
+        nosmooth="ON"
         ;;
 
       #Missing Arguments
