@@ -103,17 +103,24 @@ Le journal est écrit dans `source/generate-image/generate-generic-image.log`.
 
 ### 1.6 Nettoyer après un arrêt brutal
 
-Si une génération s'interrompt, des montages ou un périphérique loop peuvent rester actifs. Pour les libérer, depuis le répertoire où le script a été lancé :
+Si une génération s'interrompt, des montages ou un périphérique loop peuvent rester actifs. Pour les libérer :
 
 ```
-losetup -a                     # repérer le périphérique associé à out.img, ex. /dev/loop0
+cd work/target
+./clean.sh
+```
+
+Le script démonte `work_temp/boot` puis `work_temp/` s'ils sont montés. Il libère ensuite les périphériques loop associés à `$HOME/out.img` et supprime `work_temp/`. Il ne supprime jamais `work_temp/` si un montage est encore actif. `$HOME/out.img` est conservé : il sera remplacé à la prochaine génération.
+
+`clean.sh` cherche `work_temp/` dans `work/target/`, là où les scripts de génération le créent. Si la génération a été lancée depuis un autre répertoire, faites le nettoyage à la main depuis ce répertoire :
+
+```
+losetup -j $HOME/out.img       # repérer le périphérique, ex. /dev/loop0
 sudo umount work_temp/boot
 sudo umount work_temp
 sudo losetup -d /dev/loop0
 rm -rf work_temp
 ```
-
-Le script `work/target/clean.sh` vise d'anciens points de montage (`/mnt/loopXpY`, `kpartx`). Il ne correspond plus au fonctionnement actuel du script.
 
 ### 1.7 Profils `-x` utilisés dans `work/target/`
 
