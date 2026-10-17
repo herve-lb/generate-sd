@@ -323,9 +323,9 @@ function apply_common_modifications_on_SD () {
   local filename="${BOOT_DIRECTORY}/cmdline.txt"
   trace "## Apply modifications to ${filename}"
 
-  # replace "console=tty1" by "console=tty3 logo.nologo loglevel=3 vt.global_cursor_default=0 plymouth.enable=0"
+  # replace "console=tty1" by "console=tty3 quiet logo.nologo loglevel=3 vt.global_cursor_default=0 plymouth.enable=0"
   local pattern_to_remove="console=tty1"
-  local pattern_to_add="console=tty3 logo.nologo loglevel=3 vt.global_cursor_default=0 plymouth.enable=0"
+  local pattern_to_add="console=tty3 quiet logo.nologo loglevel=3 vt.global_cursor_default=0 plymouth.enable=0"
 
   #command : sed '0,/tata/ s//zaza/' in.txt
   trace "replace ${pattern_to_remove} by ${pattern_to_add} in file ${filename}"
@@ -368,6 +368,14 @@ function apply_common_modifications_on_SD () {
   # disable warnings such as undervoltage/overheating
   trace "add avoid_warnings=1"
   sudo sed -i '$aavoid_warnings=1' "${filename}"
+
+  # no firmware delay before loading the kernel
+  trace "add boot_delay=0"
+  sudo sed -i '$aboot_delay=0' "${filename}"
+
+  # no bluetooth on cabinets
+  trace "add dtoverlay=disable-bt"
+  sudo sed -i '$adtoverlay=disable-bt' "${filename}"
 
   #     Special config for borne Rene Pierre with a 270° orientation
   if [[ "${specific_console}" == "borne_rene_pierre" ]]; then
@@ -530,6 +538,49 @@ function apply_common_modifications_on_SD () {
   trace "Add  sudo sh -c 'TERM=linux setterm -foreground black -clear all >/dev/tty0' in ${filename}"
   # i : add line before the line selected by search term
   sudo sed -i '/^exit 0/i\sudo sh -c "TERM=linux setterm -foreground black -clear all >\/dev\/tty0"' "${filename}"
+  trace "Remove IP address display in ${filename}"
+  sudo sed -i '/^_IP=\$(hostname -I)/,/^fi$/d' "${filename}"
+
+  #
+  # Faster boot
+  #
+  trace "## Faster boot"
+
+  # do not wait for an IP address before rc.local and the autologin (up to 30s without network)
+  filename="${WORKING_DIRECTORY}/etc/systemd/system/dhcpcd.service.d/wait.conf"
+  trace "Remove ${filename}"
+  sudo rm -f "${filename}"
+
+  # disable useless services by removing their activation links (same as systemctl disable)
+  local systemd_directory="${WORKING_DIRECTORY}/etc/systemd/system"
+  local service_link
+  for service_link in \
+    multi-user.target.wants/hciuart.service \
+    bluetooth.target.wants/bluetooth.service \
+    dbus-org.bluez.service \
+    multi-user.target.wants/smbd.service \
+    multi-user.target.wants/nmbd.service \
+    multi-user.target.wants/avahi-daemon.service \
+    sockets.target.wants/avahi-daemon.socket \
+    dbus-org.freedesktop.Avahi.service \
+    multi-user.target.wants/dphys-swapfile.service \
+    multi-user.target.wants/triggerhappy.service \
+    sockets.target.wants/triggerhappy.socket \
+    multi-user.target.wants/rsync.service \
+    multi-user.target.wants/rpi-eeprom-update.service \
+    multi-user.target.wants/nfs-client.target \
+    remote-fs.target.wants/nfs-client.target \
+    timers.target.wants/apt-daily.timer \
+    timers.target.wants/apt-daily-upgrade.timer \
+    timers.target.wants/man-db.timer
+  do
+    if [[ -L "${systemd_directory}/${service_link}" ]]; then
+      trace "Disable ${service_link}"
+      sudo rm "${systemd_directory}/${service_link}"
+    else
+      warning "Service déjà désactivé ou absent : ${service_link}"
+    fi
+  done
 }
 
 function create_Generic_SD () {

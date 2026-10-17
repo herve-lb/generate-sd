@@ -159,7 +159,25 @@ Pour une sortie composite vers un téléviseur cathodique (`pacman_GameStoryVers
 
 N'utilisez pas `-l` non plus pour les consoles portables à écran LCD (Game Boy…) : elles n'ont jamais eu de scanlines.
 
-### 1.9 Autres méthodes
+### 1.9 Créer la configuration d'une manette depuis le PC
+
+Branchez la manette, ou l'encodeur USB de la borne, sur le PC Linux, puis lancez :
+
+```
+source/controller-config/create-controller-cfg.py -l                       # liste les manettes branchées
+source/controller-config/create-controller-cfg.py -o "work/origin/game-to-install/<système>/<nom>.cfg"
+```
+
+L'outil demande chaque commande dans l'ordre : directions, A, B, X, Y, L, R, L2, R2, Select, Start. Appuyez sur la commande demandée, ou sur Entrée si elle n'existe pas. Le fichier écrit est prêt pour l'option `-c`.
+
+- Le PC et le Pi utilisent le même pilote du noyau Linux. L'outil numérote les boutons et les axes comme le pilote `udev` de RetroArch, donc les numéros sont les mêmes sur la borne.
+- Le fichier contient le nom du périphérique (`input_device`) et ses identifiants USB (`input_vendor_id`, `input_product_id`).
+- S'il y a plusieurs manettes branchées, l'outil demande laquelle utiliser. On peut aussi la désigner avec `-d /dev/input/eventN`.
+- Si aucune manette n'est trouvée alors qu'elle est branchée, relancez avec `sudo` : les droits de `/dev/input/event*` dépendent de la distribution.
+
+RetroArch choisit le fichier d'après `input_device`, pas d'après le nom du fichier. Si l'encodeur de la borne et vos manettes de test portent le même nom (par ex. « Mega World »), une même image ne peut être correcte que pour l'un des deux.
+
+### 1.10 Autres méthodes
 
 - `source/packer-generation/` contient une autre chaîne de génération, basée sur Packer (`packer-builder-arm-image`). `generate-generic-image-with-packer.sh` accepte les mêmes options. Voir le README de ce répertoire.
 - `source/generate-image/retropie.sh` et `generate-retropie-image(obsolete).sh` sont d'anciennes versions, remplacées par `generate-generic-image.sh`.
@@ -198,9 +216,9 @@ Elles sont faites par la fonction `apply_common_modifications_on_SD`. Certaines 
 
 | Changement | Condition |
 |---|---|
-| Remplace la **première** occurrence de `console=tty1` par `console=tty3 logo.nologo loglevel=3 vt.global_cursor_default=0 plymouth.enable=0` | Toujours |
+| Remplace la **première** occurrence de `console=tty1` par `console=tty3 quiet logo.nologo loglevel=3 vt.global_cursor_default=0 plymouth.enable=0` | Toujours |
 
-Les messages du noyau sont envoyés sur tty3 (invisible), le logo framboise est masqué, seuls les messages d'erreur sont affichés et le curseur clignotant est caché. `plymouth.enable=0` désactive l'écran de démarrage graphique Plymouth, s'il est installé.
+Les messages du noyau sont envoyés sur tty3 (invisible) et réduits au minimum (`quiet`), le logo framboise est masqué, seuls les messages d'erreur sont affichés et le curseur clignotant est caché. `plymouth.enable=0` désactive l'écran de démarrage graphique Plymouth, s'il est installé.
 
 #### `/boot/config.txt` — affichage
 
@@ -223,6 +241,8 @@ Lignes ajoutées à la fin du fichier, dans cet ordre :
 |---|---|---|
 | `disable_splash=1` | Supprime l'écran arc-en-ciel au démarrage | Toujours |
 | `avoid_warnings=1` | Masque les icônes de sous-tension / surchauffe | Toujours |
+| `boot_delay=0` | Supprime l'attente du firmware avant le chargement du noyau | Toujours |
+| `dtoverlay=disable-bt` | Désactive le Bluetooth | Toujours |
 | `display_rotate=1` | Rotation de l'affichage de 90° (écran vertical) | `-x borne_rene_pierre` |
 | `hdmi_group=2` | Mode HDMI de type DMT (moniteur) | `-x borne_rene_pierre` |
 | `hdmi_mode=9` | 800×600 à 60 Hz, 4:3 | `-x borne_rene_pierre` |
@@ -290,6 +310,16 @@ Sans l'un de ces profils, le fichier n'est pas touché.
 | `/etc/motd` est vidé (plus de message du jour après le login) | Toujours |
 | Dans `/home/pi/.bashrc`, la ligne commençant par `retropie_welcome` est commentée (plus d'écran d'accueil RetroPie en texte) | Toujours |
 | Dans `/etc/rc.local`, ajout **avant** `exit 0` de :<br>`sudo sh -c "TERM=linux setterm -foreground black -clear all >/dev/tty0"`<br>Le texte de la console devient noir sur noir et l'écran est effacé | Toujours |
+| Dans `/etc/rc.local`, suppression du bloc qui affiche l'adresse IP (`_IP=$(hostname -I)` … `fi`) | Toujours |
+
+#### Démarrage plus rapide
+
+| Changement | Condition |
+|---|---|
+| Suppression de `/etc/systemd/system/dhcpcd.service.d/wait.conf` (« Wait for network at boot »). Sans réseau, la connexion automatique, donc le jeu, attendait une adresse IP jusqu'à 30 s environ. dhcpcd tourne désormais en arrière-plan : SSH reste disponible dès qu'un réseau est branché | Toujours |
+| Désactivation des services inutiles sur une borne, par suppression de leurs liens dans `/etc/systemd/system/` (équivalent de `systemctl disable`) :<br>Bluetooth : `hciuart`, `bluetooth` (+ `dbus-org.bluez.service`)<br>Samba : `smbd`, `nmbd`<br>Découverte réseau : `avahi-daemon` (service, socket, `dbus-org.freedesktop.Avahi.service`)<br>Fichier d'échange : `dphys-swapfile`<br>Divers : `triggerhappy` (service, socket), `rsync`, `rpi-eeprom-update`, `nfs-client.target`<br>Maintenance : timers `apt-daily`, `apt-daily-upgrade`, `man-db` | Toujours |
+
+Un service déjà désactivé ou absent de l'image est signalé par un avertissement dans le journal, sans arrêter le script.
 
 ### 3.2 Mode générique (`-g`)
 
@@ -357,6 +387,8 @@ Ces remarques viennent de la lecture du script. Elles ne changent pas son compor
 - **Profil `pacman_GameStoryVersailles` :** `disable_overscan` reste commenté, donc l'overscan par défaut du firmware s'applique. C'est voulu pour la sortie composite sur un téléviseur.
 - **Profil `borne_pacman_mo5` :** le script ne décommente pas la ligne `aspect_ratio_index`. Si elle est commentée dans l'image d'origine, le passage à `22` n'a pas d'effet et RetroArch garde son ratio par défaut.
 - **Viewport et `video_font_enable` :** ces réglages sont faits dans `/opt/retropie/emulators/retroarch/retroarch.cfg`, qui est le fichier par défaut de RetroArch. Ce n'est pas `/opt/retropie/configs/all/retroarch.cfg`, le fichier lu en priorité par RetroPie.
+- **Pas de fichier d'échange :** `dphys-swapfile` est désactivé. Sur un Pi 3 (1 Go), c'est sans conséquence pour ces jeux. Sur un Pi Zero 2 W (512 Mo), un émulateur gourmand en mémoire (par ex. `lr-mame2010`) pourrait manquer de mémoire. À tester sur la borne.
+- **Plus de partage Samba ni de `retropie.local` :** pour accéder à la borne, utilisez SSH avec son adresse IP.
 - **Remplacements larges :** les `sed` de type `s/#//g` et `s/0/.../g` portent sur **toute la ligne**. Une ligne qui contient plusieurs `#` ou plusieurs `0` est entièrement modifiée.
 - **Remplacements limités :** les remplacements de `cmdline.txt`, de l'overscan et des noms dans `autostart.sh` ne portent que sur la **première** occurrence trouvée dans le fichier (`sed '0,/motif/ s//.../'`).
 - **Scanlines et `video_smooth` :** avec `-l`, le lissage est désactivé, car il rendrait les lignes floues. Le choix du shader dépend de l'orientation du jeu d'origine, pas de celle de l'écran (voir [§1.8](#18-choisir-les-scanlines--l)).
