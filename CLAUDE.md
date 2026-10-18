@@ -24,7 +24,7 @@ generate-generic-image.sh -d -g -i ../origin/origin.img -o generic.img
 # specific image (one game baked in)
 generate-generic-image.sh -d -i ../origin/origin.img -o out.img \
   -s ../origin/game-to-install/<core>/<rom> \
-  [-e <emulator, e.g. lr-mame2003>] [-c <joypad .cfg>] [-p <samples dir>] [-x <cabinet profile>] [-l scanlines_horizontal|scanlines_vertical] [-n]
+  [-e <emulator, e.g. lr-mame2003>] [-c <joypad .cfg>] [-p <samples dir>] [-x <cabinet profile>] [-l scanlines_horizontal|scanlines_vertical] [-n] [-r <percent>:<width>x<height>[:<alignment>]]
 ```
 
 - `-g` (generic) and `-s` (specific) are mutually exclusive. One of them is required.
@@ -37,7 +37,7 @@ generate-generic-image.sh -d -i ../origin/origin.img -o out.img \
 
 ## How the image is modified
 
-`apply_common_modifications_on_SD` makes `sed` edits to `boot/cmdline.txt`, `boot/config.txt`, `runcommand.cfg`, the `retroarch.cfg` files, the splash screen, motd/issue and `rc.local`. It also enables SSH. **Cabinet-specific hardware tweaks are selected with `-x <profile>`** and implemented as `if [[ "${specific_console}" == ... ]]` blocks in that function. The existing profiles are `borne_arcade_1_up`, `borne_rene_pierre`, `borne_pacman_mo5` and `pacman_GameStoryVersailles`. They cover overscan, display rotation, HDMI/TV-out mode, audio over jack, and the custom RetroArch viewport. To add a new cabinet, add another profile block there.
+`apply_common_modifications_on_SD` makes `sed` edits to `boot/cmdline.txt`, `boot/config.txt`, `runcommand.cfg`, the `retroarch.cfg` files, the splash screen, motd/issue and `rc.local`. It also enables SSH. **Cabinet-specific hardware tweaks are selected with `-x <profile>`** and implemented as `if [[ "${specific_console}" == ... ]]` blocks in that function. The existing profiles are `borne_arcade_1_up`, `borne_rene_pierre`, `borne_pacman_mo5` and `pacman_GameStoryVersailles`. They cover overscan, display rotation, HDMI/TV-out mode, audio over jack, and the custom RetroArch viewport. To add a new cabinet, add another profile block there. `-r` (shrink by a percentage, for a given screen resolution, optionally aligned with `haut`, `bas`, `gauche`, `droite` or a corner such as `bas-gauche`) is validated and converted into per-side pixel margins in `check_parameters`. The overscan lines are then rewritten in `config.txt` after the profile blocks, so `-r` overrides a profile's overscan.
 
 The boot-time launcher is installed as `/opt/retropie/configs/all/autostart.sh`:
 - **Specific mode** copies `source/launch-game/10-retropie.sh.specific`, then fills in its `CORE_NAME`, `GAME_NAME` and `EMULATOR_NAME` placeholders with `sed`. At boot it runs `runcommand.sh` for the game. If `-e` was given, it uses that emulator's command line from `configs/<core>/emulators.cfg` instead.

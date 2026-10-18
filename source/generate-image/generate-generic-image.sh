@@ -41,6 +41,7 @@ specific_console=
 scanlines=
 nosmooth=
 shader_file=
+shrink=
 
 # OS pre-requisite #######################################################
 
@@ -76,6 +77,33 @@ function check_parameters() {
         exitonerror "Option -l inconnue : ${scanlines} (valeurs possibles : scanlines_horizontal, scanlines_vertical)"
         ;;
     esac
+  fi
+
+  # check shrink option (percent:WIDTHxHEIGHT[:alignment]) and compute the overscan margins in pixels
+  if ! [[ -z "${shrink}" ]]; then
+    if ! [[ "${shrink}" =~ ^([0-9]+)(\.[0-9]+)?:([0-9]+)x([0-9]+)(:(haut|bas|gauche|droite|haut-gauche|haut-droite|bas-gauche|bas-droite))?$ ]] || (( 10#${BASH_REMATCH[1]} >= 50 )); then
+      usage
+      exitonerror "Option -r invalide : ${shrink} (format attendu : pourcentage:largeurxhauteur[:alignement], par exemple 5:1024x768 ou 5:1024x768:bas, avec un pourcentage inférieur à 50 et un alignement parmi haut, bas, gauche, droite, haut-gauche, haut-droite, bas-gauche, bas-droite)"
+    fi
+    local shrink_percent="${shrink%%:*}"
+    local shrink_alignment="${BASH_REMATCH[6]}"
+    local overscan_horizontal=$(awk -v p="${shrink_percent}" -v w="${BASH_REMATCH[3]}" 'BEGIN { printf "%d", w * p / 200 + 0.5 }')
+    local overscan_vertical=$(awk -v p="${shrink_percent}" -v h="${BASH_REMATCH[4]}" 'BEGIN { printf "%d", h * p / 200 + 0.5 }')
+
+    # centered by default, the whole margin goes to the opposite side of the alignment
+    overscan_left=${overscan_horizontal}
+    overscan_right=${overscan_horizontal}
+    overscan_top=${overscan_vertical}
+    overscan_bottom=${overscan_vertical}
+    case "${shrink_alignment}" in
+      haut*) overscan_top=0 ; overscan_bottom=$((overscan_vertical * 2)) ;;
+      bas*) overscan_top=$((overscan_vertical * 2)) ; overscan_bottom=0 ;;
+    esac
+    case "${shrink_alignment}" in
+      *gauche) overscan_left=0 ; overscan_right=$((overscan_horizontal * 2)) ;;
+      *droite) overscan_left=$((overscan_horizontal * 2)) ; overscan_right=0 ;;
+    esac
+    trace "Shrink ${shrink} : overscan gauche ${overscan_left} px, droite ${overscan_right} px, haut ${overscan_top} px, bas ${overscan_bottom} px"
   fi
 
   # check if the user specify a good filename for the game
@@ -355,6 +383,19 @@ function apply_common_modifications_on_SD () {
     sudo sed -i '0,/'"#overscan_top=16"'/ s//'"overscan_top=0"'/' "${filename}"
     trace "replace '#overscan_bottom=16' by 'overscan_bottom=0' in file ${filename}"
     sudo sed -i '0,/'"#overscan_bottom=16"'/ s//'"overscan_bottom=0"'/' "${filename}"
+  fi
+
+  #     Shrink the whole display by a percentage (option -r), replacing the overscan of the cabinet profile
+  if ! [[ -z "${shrink}" ]]; then
+    trace "## Shrink ${shrink} : remove existing overscan lines and add the computed ones in file ${filename}"
+    sudo sed -i -E '/^#* *(disable_overscan|overscan_(left|right|top|bottom|scale)) *=/d' "${filename}"
+    sudo sed -i '$adisable_overscan=0' "${filename}"
+    sudo sed -i '$aoverscan_left='"${overscan_left}" "${filename}"
+    sudo sed -i '$aoverscan_right='"${overscan_right}" "${filename}"
+    sudo sed -i '$aoverscan_top='"${overscan_top}" "${filename}"
+    sudo sed -i '$aoverscan_bottom='"${overscan_bottom}" "${filename}"
+    # apply the overscan to the RetroArch layer too
+    sudo sed -i '$aoverscan_scale=1' "${filename}"
   fi
 
   # Disable overscan_scale=1
@@ -706,14 +747,14 @@ function create_Specific_SD () {
 function usage() {
   echo
   echo "USAGE:"
-  echo "image générique: $(basename $0) -g (-x \"nom de la console\") (-l scanlines_horizontal|scanlines_vertical) (-n) -i \"image Retropie d'origine\" -o \"image à générer\""
-  echo "image spécifique: $(basename $0) -s \"fichier du jeu\" (-p \"répertoire des samples\") (-e \"nom de l'émulateur\") (-c \"fichier controller à installer\") (-x \"nom de la console dont il faut appliquer les paramètres spécifiques) (-l scanlines_horizontal|scanlines_vertical) (-n pas de lissage) -i \"image Retropie d'origine\" -o \"image à générer\""
+  echo "image générique: $(basename $0) -g (-x \"nom de la console\") (-l scanlines_horizontal|scanlines_vertical) (-n) (-r pourcentage:largeurxhauteur[:alignement]) -i \"image Retropie d'origine\" -o \"image à générer\""
+  echo "image spécifique: $(basename $0) -s \"fichier du jeu\" (-p \"répertoire des samples\") (-e \"nom de l'émulateur\") (-c \"fichier controller à installer\") (-x \"nom de la console dont il faut appliquer les paramètres spécifiques) (-l scanlines_horizontal|scanlines_vertical) (-n pas de lissage) (-r pourcentage:largeurxhauteur[:alignement] réduction de l'écran) -i \"image Retropie d'origine\" -o \"image à générer\""
   echo
 }
 
 function get_options() {
 
-  while getopts "gc:e:p:s:i:o:x:l:ndh" option ;
+  while getopts "gc:e:p:s:i:o:x:l:r:ndh" option ;
   do
     trace "getopts OPTIND=$OPTIND, Option=$option, OPTARG=$OPTARG, OPTERR=$OPTERR"
     case "${option}" in
@@ -778,6 +819,11 @@ function get_options() {
       n)
         trace "No smoothing"
         nosmooth="ON"
+        ;;
+
+      r)
+        trace "Shrink"
+        shrink=${OPTARG}
         ;;
 
       #Missing Arguments

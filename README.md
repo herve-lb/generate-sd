@@ -66,11 +66,12 @@ Pour ajouter un jeu, copiez un script existant et adaptez sa ligne de commande. 
 ```
 # image générique (le jeu est fourni plus tard sur une clé USB)
 source/generate-image/generate-generic-image.sh -d -g -i <image d'origine> -o <image résultat> \
-  [-x <profil borne>] [-l <scanlines>] [-n]
+  [-x <profil borne>] [-l <scanlines>] [-n] [-r <pourcentage>:<largeur>x<hauteur>[:<alignement>]]
 
 # image spécifique (un jeu installé sur la carte)
 source/generate-image/generate-generic-image.sh -d -i <image d'origine> -o <image résultat> \
-  -s <rom> [-e <émulateur>] [-c <fichier .cfg manette>] [-p <répertoire samples>] [-x <profil borne>] [-l <scanlines>] [-n]
+  -s <rom> [-e <émulateur>] [-c <fichier .cfg manette>] [-p <répertoire samples>] [-x <profil borne>] [-l <scanlines>] [-n] \
+  [-r <pourcentage>:<largeur>x<hauteur>[:<alignement>]]
 ```
 
 | Option | Rôle |
@@ -85,6 +86,7 @@ source/generate-image/generate-generic-image.sh -d -i <image d'origine> -o <imag
 | `-x <profil>` | Réglages propres à une borne : `borne_arcade_1_up`, `borne_rene_pierre`, `borne_pacman_mo5`, `pacman_GameStoryVersailles`. Un nom inconnu n'est pas signalé comme une erreur : seules les modifications communes sont appliquées. |
 | `-l <scanlines>` | Effet scanlines par shader RetroArch : `scanlines_horizontal` (shader `crt-pi`) ou `scanlines_vertical` (shader `crt-pi-vertical`). Voir [§1.8](#18-choisir-les-scanlines--l) pour choisir. Une autre valeur arrête le script avant toute modification. |
 | `-n` | Désactive le lissage de l'image (`video_smooth`) : pixels nets. Utile pour les jeux en basse résolution très agrandis, comme la Game Boy. Implicite avec `-l`. |
+| `-r <pourcentage>:<largeur>x<hauteur>[:<alignement>]` | Réduit tout l'affichage (splash, EmulationStation, jeu) de ce pourcentage, avec une bordure noire autour, par overscan dans `config.txt`. La résolution est celle de l'écran de la borne, par exemple `-r 5:1024x768`. Elle sert à convertir le pourcentage en pixels : si l'écran a une autre résolution, la réduction réelle sera différente. L'image est centrée, sauf si un alignement la cale contre un bord ou dans un coin : `haut`, `bas`, `gauche`, `droite`, `haut-gauche`, `haut-droite`, `bas-gauche` ou `bas-droite`, par exemple `-r 5:1024x768:bas`. Le pourcentage peut être décimal (`2.5`) et doit être inférieur à 50. Remplace l'overscan d'un profil `-x`. Un format invalide arrête le script avant toute modification. |
 | `-d` | Mode debug (traces à l'écran). Aucun effet sur l'image. |
 
 `-g` et `-s` s'excluent mutuellement, et l'un des deux est obligatoire. `-e`, `-c` et `-p` ne sont pris en compte qu'en mode spécifique.
@@ -236,6 +238,19 @@ Lignes modifiées :
 
 Pour `borne_arcade_1_up`, l'overscan est donc réactivé avec des marges de 20 px à gauche et à droite et sans marge en haut ni en bas. Cela donne un léger zoom vertical adapté à l'écran de la borne.
 
+Avec `-r <pourcentage>:<largeur>x<hauteur>[:<alignement>]`, toutes les lignes `disable_overscan`, `overscan_left`, `overscan_right`, `overscan_top`, `overscan_bottom` et `overscan_scale` existantes, commentées ou non, sont supprimées. Ces lignes sont ensuite ajoutées à la fin du fichier, et remplacent donc l'overscan d'un profil `-x` :
+
+```
+disable_overscan=0
+overscan_left=<marge gauche>
+overscan_right=<marge droite>
+overscan_top=<marge haut>
+overscan_bottom=<marge bas>
+overscan_scale=1
+```
+
+Sans alignement, chaque marge vaut `largeur × pourcentage / 200` (gauche et droite) ou `hauteur × pourcentage / 200` (haut et bas), arrondi au pixel. Par exemple, `-r 5:1024x768` donne 26 px à gauche et à droite et 19 px en haut et en bas. Un alignement met toute la marge du côté opposé : avec `-r 5:1024x768:bas`, la marge haute vaut 38 px et la marge basse 0, et l'image reste centrée horizontalement. Avec `bas-gauche`, on a en plus 0 à gauche et 52 px à droite. `overscan_scale=1` applique aussi la réduction à l'image de RetroArch.
+
 Lignes ajoutées à la fin du fichier, dans cet ordre :
 
 | Ligne ajoutée | Rôle | Condition |
@@ -385,13 +400,13 @@ Pour qu'aucun choix d'émulateur ne puisse jamais apparaître, il est préférab
 
 Ces remarques viennent de la lecture du script. Elles ne changent pas son comportement, mais elles aident à comprendre le résultat.
 
-- **Profil `pacman_GameStoryVersailles` :** `disable_overscan` reste commenté, donc l'overscan par défaut du firmware s'applique. C'est voulu pour la sortie composite sur un téléviseur.
+- **Profil `pacman_GameStoryVersailles` :** `disable_overscan` reste commenté, donc l'overscan par défaut du firmware s'applique. C'est voulu pour la sortie composite sur un téléviseur. Avec `-r`, cet overscan par défaut est remplacé par les marges calculées.
 - **Profil `borne_pacman_mo5` :** le script ne décommente pas la ligne `aspect_ratio_index`. Si elle est commentée dans l'image d'origine, le passage à `22` n'a pas d'effet et RetroArch garde son ratio par défaut.
 - **Viewport et `video_font_enable` :** ces réglages sont faits dans `/opt/retropie/emulators/retroarch/retroarch.cfg`, qui est le fichier par défaut de RetroArch. Ce n'est pas `/opt/retropie/configs/all/retroarch.cfg`, le fichier lu en priorité par RetroPie.
 - **Pas de fichier d'échange :** `dphys-swapfile` est désactivé. Sur un Pi 3 (1 Go), c'est sans conséquence pour ces jeux. Sur un Pi Zero 2 W (512 Mo), un émulateur gourmand en mémoire (par ex. `lr-mame2010`) pourrait manquer de mémoire. À tester sur la borne.
 - **Plus de partage Samba ni de `retropie.local` :** pour accéder à la borne, utilisez SSH avec son adresse IP.
 - **Remplacements larges :** les `sed` de type `s/#//g` et `s/0/.../g` portent sur **toute la ligne**. Une ligne qui contient plusieurs `#` ou plusieurs `0` est entièrement modifiée.
-- **Remplacements limités :** les remplacements de `cmdline.txt`, de l'overscan et des noms dans `autostart.sh` ne portent que sur la **première** occurrence trouvée dans le fichier (`sed '0,/motif/ s//.../'`).
+- **Remplacements limités :** les remplacements de `cmdline.txt`, de l'overscan et des noms dans `autostart.sh` ne portent que sur la **première** occurrence trouvée dans le fichier (`sed '0,/motif/ s//.../'`). L'option `-r` fait exception : elle supprime toutes les lignes d'overscan avant d'ajouter les siennes.
 - **Scanlines et `video_smooth` :** avec `-l`, le lissage est désactivé, car il rendrait les lignes floues. Le choix du shader dépend de l'orientation du jeu d'origine, pas de celle de l'écran (voir [§1.8](#18-choisir-les-scanlines--l)).
 - **Scanlines et viewport :** avec `borne_pacman_mo5`, la zone de 366×476 px n'est pas un multiple entier de la résolution du jeu. Les lignes peuvent être irrégulières (moiré). À vérifier à l'écran.
 - **Scanlines et sortie composite :** `-l` est déconseillé avec `pacman_GameStoryVersailles`. Un téléviseur cathodique produit déjà ses propres scanlines.

@@ -2,8 +2,11 @@
     -d \
     -i ../origin/origin.img \
     -o donkey-kong-world-arcade-version-nes-emul.img \
-    -s '../origin/game-to-install/nes/Donkey Kong - Original Edition (USA, Europe) (3DS Virtual Console).nes' \
-    -c ../origin/game-to-install/nes/USB-gamepad.cfg \
+    -s "../origin/game-to-install/nes/Donkey Kong - Original Edition (USA, Europe) (3DS Virtual Console).nes" \
+    -c "../origin/game-to-install/nes/Mega World.cfg" \
     -l scanlines_horizontal \
     2>&1 \
     | tee
+
+
+work/origin/game-to-install/nes/
