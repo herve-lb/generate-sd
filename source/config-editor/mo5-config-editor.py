@@ -17,6 +17,12 @@ import subprocess
 import sys
 import tempfile
 
+try:
+    import PySide6  # noqa: F401
+except ModuleNotFoundError:
+    sys.exit("PySide6 (Qt pour Python) n'est pas installé. Sur Ubuntu :\n"
+             "    sudo apt install python3-pyside6.qtwidgets")
+
 from PySide6.QtCore import QProcess, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPixmap, QPolygon, QTextCursor
 from PySide6.QtCore import QPoint
