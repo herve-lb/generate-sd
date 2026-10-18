@@ -1,6 +1,6 @@
 .DS_Store
 ._*
-source/launch-game/__pycache__
+__pycache__/
 *.log
 *.img.zip
 *.img
