@@ -2,11 +2,12 @@
 
 ##########################################################################
 #
-# This script creates GENERIC retropie images starting from a brand new retropie image.
+# This script creates GENERIC or SPECIFIC retropie images starting from a brand new retropie image,
+# and modifies the display, sound and controller settings of an image or SD card it generated.
 #
 # Requirements :
 # - Linux OS
-# - losetup
+# - losetup, lsblk
 # - original retropie image file
 
 # Constants ############################################################
@@ -20,32 +21,110 @@ AUTOLAUNCH_SCRIPT_FILENAME_GenericLaunch="10-retropie.sh.generic"
 AUTOLAUNCH_SCRIPT_FILENAME_SpecificLaunch="10-retropie.sh.specific"
 JOYPAD_CONFIGURATION_DIRECTORY="${WORKING_DIRECTORY}/opt/retropie/configs/all/retroarch/autoconfig"
 SHADERS_DIRECTORY="/opt/retropie/configs/all/retroarch/shaders"
-TEMP_IMAGE="${HOME}/out.img"
+# options used to generate the image, read back by the configuration editor
+OPTIONS_RECORD_FILENAME="mo5-options.conf"
+JACK_AUDIO_LINES=$'pcm.!default {type hw card 1}\nctl.!default {type hw card 1}'
+
+# the user who launched the script, even through sudo: owns the working and result images
+REAL_USER="${SUDO_USER:-$(id -un)}"
+REAL_HOME="$(getent passwd "${REAL_USER}" | cut -d: -f6)"
+TEMP_IMAGE="${REAL_HOME}/out.img"
+
+# Options ###############################################################
+#
+# Single description of every option, used by getopts, the long names, the help, the value checks
+# and --describe (read by the configuration editor).
+# short|long|variable|type|values|label|category|description
+#   type: flag (no value), file, dir, path, text, choice (one of the values)
+#   category: mode, image, game, controller, display, sound, run
+#   controller, display and sound options can also be changed on a generated image or SD card (--modify)
+
+OPTIONS=(
+  "g|generic|generic|flag|||mode|image générique : le jeu est fourni plus tard sur une clé USB"
+  "s|specific|gamefile|file||rom|mode|image spécifique : jeu à installer. Le système est le nom du répertoire de la ROM (arcade, nes, snes…)"
+  "M|modify|modify_target|path||image ou carte|mode|modifie les réglages d'affichage, de son et de manette d'une image générée (.img) ou d'une carte SD (/dev/sdX)"
+  "i|input|original_retropie_image|file||image|image|image RetroPie d'origine (jamais modifiée)"
+  "o|output|result_image|path||image|image|image à générer (remplacée si elle existe)"
+  "e|emulator|emulatorname|text||émulateur|game|émulateur forcé, par exemple lr-mame2003. Sans cette option, l'émulateur par défaut du système"
+  "S|samples|samples_dir|dir||répertoire|game|samples à installer à côté du jeu"
+  "c|controller|controller_file|file||fichier.cfg|controller|configuration de manette RetroArch à installer"
+  "l|scanlines|scanlines|choice|horizontal vertical||display|effet scanlines : horizontal pour un jeu horizontal, vertical pour un jeu vertical"
+  "n|no-smoothing|nosmooth|flag|||display|pas de lissage de l'image : pixels nets"
+  "r|reduce|shrink|text||pourcentage:largeurxhauteur[:alignement]|display|réduit l'affichage de ce pourcentage pour un écran de cette résolution, par exemple 5:1024x768:bottom. Alignement : top, bottom, left, right, top-left, top-right, bottom-left, bottom-right"
+  "b|border|borders|text||left=N,right=N,top=N,bottom=N|display|bordures noires en pixels, par exemple left=20,right=20 (côtés absents : 0)"
+  "m|hdmi-mode|hdmi_format|choice|monitor_640x480_60hz monitor_800x600_60hz monitor_1024x768_60hz monitor_1280x1024_60hz tv_720p_60hz tv_1080p_60hz||display|mode HDMI forcé : monitor_* pour un moniteur (DMT), tv_* pour un téléviseur (CEA)"
+  "t|tv-out|tv_output|choice|pal ntsc||display|sortie composite 4:3 pour un téléviseur cathodique"
+  "R|rotate|rotation|choice|90 180 270||display|rotation de l'écran dans le sens horaire"
+  "a|audio|audio_output|choice|jack hdmi||sound|sortie du son (hdmi : sortie par défaut)"
+  "B|batch|batch|flag|||run|sans pause : ne demande pas de vérifier l'image avant le démontage"
+  "d|describe|describe|flag|||run|décrit les options au format JSON (pour l'éditeur de configuration)"
+  "h|help|help|flag|||run|cette aide"
+)
+
+# pairs of long options that cannot be used together
+CONFLICTS=(
+  "generic specific"
+  "generic modify"
+  "specific modify"
+  "reduce border"
+  "tv-out hdmi-mode"
+)
+
+# categories, in display order, and their label
+CATEGORIES=(
+  "mode|Type d'image"
+  "image|Images"
+  "game|Jeu"
+  "controller|Manette"
+  "display|Affichage"
+  "sound|Son"
+  "run|Exécution"
+)
+
+# categories that --modify can change on a generated image or SD card
+SETTINGS_CATEGORIES="controller display sound"
+
+# HDMI modes of -m: group 1 = CEA (TV modes), group 2 = DMT (computer monitor modes)
+declare -A HDMI_MODES=(
+  [monitor_640x480_60hz]="2 4"
+  [monitor_800x600_60hz]="2 9"
+  [monitor_1024x768_60hz]="2 16"
+  [monitor_1280x1024_60hz]="2 35"
+  [tv_720p_60hz]="1 4"
+  [tv_1080p_60hz]="1 16"
+)
 
 # globals ################################################################
 
 logFileName=
 translated_options=()
-specific=
-generic=
-
 loop=
+loop_created=
+modify_partitions=()
 
+# option values (see OPTIONS)
+generic=
+gamefile=
+modify_target=
 original_retropie_image=
-result_image="out.img"
+result_image=
+emulatorname=
 samples_dir=
 controller_file=
-gamefile=
-emulatorname=
 scanlines=
 nosmooth=
-shader_file=
 shrink=
 borders=
-audio_output=
-tv_output=
 hdmi_format=
+tv_output=
 rotation=
+audio_output=
+batch=
+describe=
+help=
+
+# values computed from the options
+shader_file=
 sdtv_mode=
 hdmi_group=
 hdmi_mode=
@@ -54,6 +133,39 @@ overscan_left=
 overscan_right=
 overscan_top=
 overscan_bottom=
+
+# Option table access ###################################################
+
+# read the fields of an option line into opt_short, opt_long, opt_var, opt_type, opt_values, opt_label, opt_category, opt_description
+function read_option() {
+  IFS='|' read -r opt_short opt_long opt_var opt_type opt_values opt_label opt_category opt_description <<< "$1"
+}
+
+# find an option by its short (-s) or long (--specific) name, then read its fields
+function find_option() {
+  local spec
+  for spec in "${OPTIONS[@]}"; do
+    read_option "${spec}"
+    if [[ "$1" == "-${opt_short}" || "$1" == "--${opt_long}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# value of an option, by its long name
+function option_value() {
+  find_option "--$1" && echo "${!opt_var}"
+}
+
+# "-s (--specific)" for messages
+function option_names() {
+  if find_option "$1"; then
+    echo "-${opt_short} (--${opt_long})"
+  else
+    echo "$1"
+  fi
+}
 
 # OS pre-requisite #######################################################
 
@@ -66,30 +178,61 @@ function install_prerequisites() {
 }
 
 function check_parameters() {
+  local spec pair first second value
 
-  # check if the user selects Generic or Specific Mode
-  if [[ -z "${specific}" && -z "${generic}" ]]; then
+  # exactly one of generic, specific or modify
+  if [[ -z "${generic}${gamefile}${modify_target}" ]]; then
     usage
-    exitonerror "Pas de choix entre mode générique ou spécifique"
+    exitonerror "Il faut choisir le mode : $(option_names --generic), $(option_names --specific) ou $(option_names --modify)"
   fi
 
-  # check if the user selects Generic or Specific Mode
-  if ! [[ -z "${specific}" ]] && ! [[ -z "${generic}" ]]; then
-    usage
-    exitonerror "Il faut choisir entre mode générique ou spécifique"
-  fi
+  # options that cannot be used together
+  for pair in "${CONFLICTS[@]}"; do
+    read -r first second <<< "${pair}"
+    if [[ -n "$(option_value "${first}")" && -n "$(option_value "${second}")" ]]; then
+      usage
+      exitonerror "Les options $(option_names "--${first}") et $(option_names "--${second}") ne se combinent pas"
+    fi
+  done
 
-  # check scanlines option and select the matching shader
-  if ! [[ -z "${scanlines}" ]]; then
-    case "${scanlines}" in
-      horizontal) shader_file="crt-pi.glslp" ;;
-      vertical) shader_file="crt-pi-vertical.glslp" ;;
-      *)
+  # choice options: the value must be one of the listed values
+  for spec in "${OPTIONS[@]}"; do
+    read_option "${spec}"
+    value="${!opt_var}"
+    if [[ "${opt_type}" == "choice" && -n "${value}" && " ${opt_values} " != *" ${value} "* ]]; then
+      usage
+      exitonerror "Option -${opt_short} (--${opt_long}) inconnue : ${value} (valeurs possibles : ${opt_values// /, })"
+    fi
+  done
+
+  # with --modify, only the settings can be given
+  if [[ -n "${modify_target}" ]]; then
+    for spec in "${OPTIONS[@]}"; do
+      read_option "${spec}"
+      if [[ -n "${!opt_var}" && " mode run ${SETTINGS_CATEGORIES} " != *" ${opt_category} "* ]]; then
         usage
-        exitonerror "Option -l (--scanlines) inconnue : ${scanlines} (valeurs possibles : horizontal, vertical)"
-        ;;
-    esac
+        exitonerror "L'option -${opt_short} (--${opt_long}) ne sert qu'à la génération, pas avec $(option_names --modify)"
+      fi
+    done
+    if ! [[ -f "${modify_target}" || -b "${modify_target}" ]]; then
+      exitonerror "Image ou carte SD introuvable : ${modify_target}"
+    fi
+  else
+    if [[ -z "${original_retropie_image}" ]]; then
+      usage
+      exitonerror "Il faut préciser l'image RetroPie d'origine : $(option_names --input)"
+    fi
+    if [[ -z "${result_image}" ]]; then
+      usage
+      exitonerror "Il faut préciser l'image à générer : $(option_names --output)"
+    fi
   fi
+
+  # scanlines: matching shader
+  case "${scanlines}" in
+    horizontal) shader_file="crt-pi.glslp" ;;
+    vertical) shader_file="crt-pi-vertical.glslp" ;;
+  esac
 
   # check shrink option (percent:WIDTHxHEIGHT[:alignment]) and compute the overscan margins in pixels
   if ! [[ -z "${shrink}" ]]; then
@@ -120,10 +263,6 @@ function check_parameters() {
 
   # check border option (left=N,right=N,top=N,bottom=N in pixels, missing sides are 0)
   if ! [[ -z "${borders}" ]]; then
-    if ! [[ -z "${shrink}" ]]; then
-      usage
-      exitonerror "Les options -r (--reduce) et -b (--border) règlent toutes les deux l'overscan : il faut choisir l'une ou l'autre"
-    fi
     overscan_left=0
     overscan_right=0
     overscan_top=0
@@ -144,72 +283,26 @@ function check_parameters() {
     trace "Bordures ${borders} : overscan gauche ${overscan_left} px, droite ${overscan_right} px, haut ${overscan_top} px, bas ${overscan_bottom} px"
   fi
 
-  # check audio option
-  if ! [[ -z "${audio_output}" ]]; then
-    case "${audio_output}" in
-      jack|hdmi) ;;
-      *)
-        usage
-        exitonerror "Option -a (--audio) inconnue : ${audio_output} (valeurs possibles : jack, hdmi)"
-        ;;
-    esac
-  fi
+  # composite output
+  case "${tv_output}" in
+    pal) sdtv_mode=2 ;;
+    ntsc) sdtv_mode=0 ;;
+  esac
 
-  # check composite output option
-  if ! [[ -z "${tv_output}" ]]; then
-    case "${tv_output}" in
-      pal) sdtv_mode=2 ;;
-      ntsc) sdtv_mode=0 ;;
-      *)
-        usage
-        exitonerror "Option -t (--tv-out) inconnue : ${tv_output} (valeurs possibles : pal, ntsc)"
-        ;;
-    esac
-    if ! [[ -z "${hdmi_format}" ]]; then
-      usage
-      exitonerror "Les options -t (--tv-out, sortie composite) et -m (--hdmi-mode) ne se combinent pas : la borne utilise l'une ou l'autre sortie"
-    fi
-  fi
-
-  # check HDMI mode option: group 1 = CEA (TV modes), group 2 = DMT (computer monitor modes)
+  # HDMI mode
   if ! [[ -z "${hdmi_format}" ]]; then
-    case "${hdmi_format}" in
-      monitor_640x480_60hz) hdmi_group=2 ; hdmi_mode=4 ;;
-      monitor_800x600_60hz) hdmi_group=2 ; hdmi_mode=9 ;;
-      monitor_1024x768_60hz) hdmi_group=2 ; hdmi_mode=16 ;;
-      monitor_1280x1024_60hz) hdmi_group=2 ; hdmi_mode=35 ;;
-      tv_720p_60hz) hdmi_group=1 ; hdmi_mode=4 ;;
-      tv_1080p_60hz) hdmi_group=1 ; hdmi_mode=16 ;;
-      *)
-        usage
-        exitonerror "Option -m (--hdmi-mode) inconnue : ${hdmi_format} (valeurs possibles : monitor_640x480_60hz, monitor_800x600_60hz, monitor_1024x768_60hz, monitor_1280x1024_60hz, tv_720p_60hz, tv_1080p_60hz)"
-        ;;
-    esac
+    read -r hdmi_group hdmi_mode <<< "${HDMI_MODES[${hdmi_format}]}"
   fi
 
-  # check rotation option (clockwise)
-  if ! [[ -z "${rotation}" ]]; then
-    case "${rotation}" in
-      90) display_rotate=1 ;;
-      180) display_rotate=2 ;;
-      270) display_rotate=3 ;;
-      *)
-        usage
-        exitonerror "Option -R (--rotate) inconnue : ${rotation} (valeurs possibles : 90, 180, 270)"
-        ;;
-    esac
-  fi
+  # rotation (clockwise)
+  case "${rotation}" in
+    90) display_rotate=1 ;;
+    180) display_rotate=2 ;;
+    270) display_rotate=3 ;;
+  esac
 
   # check if the user specify a good filename for the game
-  if ! [[ -z "${specific}" ]]; then
-
-    # No filename
-    if [[ -z "${gamefile}" ]]; then
-      usage
-      exitonerror "Il faut préciser un nom de fichier pour le jeu à installer"
-    fi
-
-    # bad file
+  if ! [[ -z "${gamefile}" ]]; then
     if ! [[ -f "${gamefile}" ]]; then
       usage
       exitonerror "Il faut préciser un nom de fichier valide pour le jeu à installer"
@@ -220,12 +313,12 @@ function check_parameters() {
       usage
       exitonerror "Il faut préciser un répertoire de Samples valide pour accompagner le jeu à installer"
     fi
+  fi
 
-    # if controller filename is provided then check file exists
-    if [[ ! -z "${controller_file}" ]] && [[ ! -f "${controller_file}" ]]; then
-      usage
-      exitonerror "Il faut préciser un nom de fichier valide pour la configuration du joystick"
-    fi
+  # if controller filename is provided then check file exists
+  if [[ ! -z "${controller_file}" ]] && [[ ! -f "${controller_file}" ]]; then
+    usage
+    exitonerror "Il faut préciser un nom de fichier valide pour la configuration du joystick"
   fi
 }
 
@@ -270,21 +363,22 @@ function exitonerror() {
   exit 1
 }
 
+# pause so that the mounted image can be checked, except in batch mode
+function pause() {
+  if [[ -z "${batch}" ]]; then
+    read -p "$1" -n1 -s
+    echo
+  fi
+}
+
 # Image file Management #######################################################
 
 function prepare_image() {
   trace "##########################"
   trace "prepare_image ############"
 
-  if [[ -z "${original_retropie_image}" ]]; then
-    exitonerror "Pas d'image Retropie en entrée"
-  fi
   if ! [[ -f "${original_retropie_image}" ]]; then
     exitonerror "Le fichier image Retropie d'entrée est introuvable"
-  fi
-
-  if [[ -z "${result_image}" ]]; then
-    exitonerror "Pas d'image de destination"
   fi
 
   # Delete old result if any
@@ -321,25 +415,56 @@ function prepare_result() {
      exitonerror "L'image de travail ${TEMP_IMAGE} n'existe pas"
   fi
 
-  # copy the result to the given destination
+  # copy the result to the given destination, owned by the user even when run through sudo
   trace "Copie de ${TEMP_IMAGE} vers ${result_image}"
   cp "${TEMP_IMAGE}" "${result_image}"
+  chown "${REAL_USER}:" "${TEMP_IMAGE}" "${result_image}" 2> /dev/null
 }
 
-function mount_image() {
-  trace "##########################"
-  trace "mount_image ##############"
+# partitions of a disk, image loop device or SD card, in order: boot (FAT) then system (ext4)
+function list_partitions() {
+  lsblk -lnpo NAME,TYPE "$1" | awk '$2 == "part" { print $1 }'
+}
 
-  # Associate image to the first available device, in one step to avoid a race on the device
-  loop=$(sudo losetup -f --show -P "${TEMP_IMAGE}")
-  if [[ -z "${loop}" ]]; then
-    exitonerror "Impossible d'associer l'image ${TEMP_IMAGE} à un pseudo périphérique (losetup -f error)"
+# an SD card that can be modified: a whole removable or USB disk, which does not hold the running system
+function check_sd_card() {
+  local device="$1"
+  local type removable transport
+
+  read -r type removable transport <<< "$(lsblk -dno TYPE,RM,TRAN "${device}")"
+  if [[ "${type}" != "disk" ]]; then
+    exitonerror "${device} n'est pas un disque entier : indiquer la carte (par exemple /dev/sdb), pas une partition"
   fi
-  trace "Association de ${loop} avec l'image ${TEMP_IMAGE}"
+  if [[ "${removable}" != "1" && "${transport}" != "usb" ]]; then
+    exitonerror "${device} n'est ni amovible ni USB : par sécurité, il n'est pas modifié"
+  fi
+  if lsblk -lno MOUNTPOINT "${device}" | grep -qxE '/|/boot|/boot/efi|/home|\[SWAP\]'; then
+    exitonerror "${device} contient le système en cours d'exécution : il n'est pas modifié"
+  fi
+}
 
-  # from now on, always free the image on exit (error, Ctrl-C or normal end)
-  trap umount_image EXIT
-  trap 'exit 1' INT TERM
+# unmount the partitions of a device mounted elsewhere (by the desktop when it appears)
+function release_partitions() {
+  local partition mountpoint
+  for partition in $(list_partitions "$1"); do
+    mountpoint="$(lsblk -lno MOUNTPOINT "${partition}" | head -n 1)"
+    while [[ -n "${mountpoint}" ]]; do
+      trace "Démontage de ${partition}, monté sur ${mountpoint}"
+      sudo umount "${partition}" || exitonerror "Impossible de démonter ${partition} : fermer les fichiers ouverts dessus"
+      mountpoint="$(lsblk -lno MOUNTPOINT "${partition}" | head -n 1)"
+    done
+  done
+}
+
+# mount the boot and system partitions of a device on the working directory
+function mount_partitions() {
+  local device="$1"
+  local partitions
+  release_partitions "${device}"
+  mapfile -t partitions < <(list_partitions "${device}")
+  if (( ${#partitions[@]} < 2 )); then
+    exitonerror "${device} n'a pas les deux partitions d'une image RetroPie (démarrage et système)"
+  fi
 
   # Create temporary directory
   trace "Création du répertoire de travail ${WORKING_DIRECTORY}"
@@ -349,16 +474,56 @@ function mount_image() {
   fi
 
   # Mount the image and map on the working directory
-  trace "Montage de ${loop}p2 sur ${WORKING_DIRECTORY}"
-  sudo mount "${loop}p2" "${WORKING_DIRECTORY}"
+  trace "Montage de ${partitions[1]} sur ${WORKING_DIRECTORY}"
+  sudo mount "${partitions[1]}" "${WORKING_DIRECTORY}"
   if [ $? -ne 0 ]; then
-    exitonerror "Impossible de monter ${loop}p2 sur ${WORKING_DIRECTORY}"
+    exitonerror "Impossible de monter ${partitions[1]} sur ${WORKING_DIRECTORY}"
   fi
-  trace "Montage de ${loop}p1 sur ${WORKING_DIRECTORY}/boot"
-  sudo mount "${loop}p1" "${WORKING_DIRECTORY}/boot"
+  trace "Montage de ${partitions[0]} sur ${BOOT_DIRECTORY}"
+  sudo mount "${partitions[0]}" "${BOOT_DIRECTORY}"
   if [ $? -ne 0 ]; then
-    exitonerror "Impossible de monter ${loop}p1 sur ${WORKING_DIRECTORY}/boot"
+    exitonerror "Impossible de monter ${partitions[0]} sur ${BOOT_DIRECTORY}"
   fi
+}
+
+# mount an image file: associate it to a loop device first
+function mount_image() {
+  local image="$1"
+  trace "##########################"
+  trace "mount_image ##############"
+
+  # an image already associated (opened by the configuration editor, or left by an aborted run) is not touched
+  if [[ -n "$(losetup -j "${image}")" ]]; then
+    exitonerror "L'image ${image} est déjà utilisée par un périphérique loop ($(losetup -j "${image}" | cut -d: -f1)) : la fermer avant"
+  fi
+
+  # Associate image to the first available device, in one step to avoid a race on the device
+  loop=$(sudo losetup -f --show -P "${image}")
+  if [[ -z "${loop}" ]]; then
+    exitonerror "Impossible d'associer l'image ${image} à un pseudo périphérique (losetup -f error)"
+  fi
+  loop_created="ON"
+  trace "Association de ${loop} avec l'image ${image}"
+
+  # from now on, always free the image on exit (error, Ctrl-C or normal end)
+  trap umount_image EXIT
+  trap 'exit 1' INT TERM
+
+  mount_partitions "${loop}"
+}
+
+# mount an SD card: free the partitions mounted by the desktop first
+function mount_sd_card() {
+  local device="$1"
+  trace "##########################"
+  trace "mount_sd_card ############"
+
+  check_sd_card "${device}"
+  loop="${device}"
+  trap umount_image EXIT
+  trap 'exit 1' INT TERM
+
+  mount_partitions "${device}"
 }
 
 function umount_image() {
@@ -371,28 +536,33 @@ function umount_image() {
   trace "umount_image #############"
 
   if mountpoint -q "${BOOT_DIRECTORY}"; then
-    trace "Démontage de ${loop}p1"
+    trace "Démontage de ${BOOT_DIRECTORY}"
     sudo umount "${BOOT_DIRECTORY}"
   fi
   if mountpoint -q "${WORKING_DIRECTORY}"; then
-    trace "Démontage de ${loop}p2"
+    trace "Démontage de ${WORKING_DIRECTORY}"
     sudo umount "${WORKING_DIRECTORY}"
   fi
 
   # never delete the working directory while the image is still mounted on it
   if mountpoint -q "${BOOT_DIRECTORY}" || mountpoint -q "${WORKING_DIRECTORY}"; then
     warning "Image encore montée sur ${WORKING_DIRECTORY} : répertoire conservé, lancer work/target/clean.sh"
-  else
+  elif [[ -d "${WORKING_DIRECTORY}" ]]; then
     trace "Suppression du répertoire de travail ${WORKING_DIRECTORY}"
     rm -rf "${WORKING_DIRECTORY}"
   fi
 
-  trace "Désassociation du périphérique ${loop} et de l'image ${TEMP_IMAGE}"
-  sudo losetup -d "${loop}"
+  if [[ -n "${loop_created}" ]]; then
+    trace "Désassociation du périphérique ${loop}"
+    sudo losetup -d "${loop}"
+  else
+    sync
+  fi
   loop=
+  loop_created=
 }
 
-# SD Creation Management ######################################################
+# Settings helpers ######################################################
 
 # remove a setting (commented or not) from a file, then append the given line at the end
 function replace_setting() {
@@ -403,6 +573,54 @@ function replace_setting() {
   trace "set '${line}' in file ${filename}"
   sudo sed -i -E '/^#* *'"${key}"' *=/d' "${filename}"
   sudo sed -i '$a'"${line}" "${filename}"
+}
+
+# remove the active (uncommented) lines of a setting, then append the given line if any
+function set_active_setting() {
+  local filename="$1"
+  local key="$2"
+  local line="$3"
+
+  sudo sed -i -E '/^'"${key}"' *=/d' "${filename}"
+  if [[ -n "${line}" ]]; then
+    trace "set '${line}' in file ${filename}"
+    sudo sed -i '$a'"${line}" "${filename}"
+  fi
+}
+
+# comment the active lines of a setting: the default value applies again
+function comment_setting() {
+  local filename="$1"
+  local key="$2"
+
+  sudo sed -i -E 's/^('"${key}"' *=)/#\1/' "${filename}"
+}
+
+# set a setting where it is: replace its active lines, or else uncomment its first commented line, or else append it
+function set_setting_in_place() {
+  local filename="$1"
+  local key="$2"
+  local line="$3"
+
+  trace "set '${line}' in file ${filename}"
+  if grep -qE '^'"${key}"' *=' "${filename}"; then
+    sudo sed -i -E 's/^'"${key}"' *=.*/'"${line}"'/' "${filename}"
+  elif grep -qE '^#+ *'"${key}"' *=' "${filename}"; then
+    sudo sed -i -E '0,/^#+ *'"${key}"' *=.*/ s//'"${line}"'/' "${filename}"
+  else
+    sudo sed -i '$a'"${line}" "${filename}"
+  fi
+}
+
+# append a line unless it is already in the file
+function add_line_once() {
+  local filename="$1"
+  local line="$2"
+
+  if ! grep -qxF "${line}" "${filename}"; then
+    trace "add ${line} in file ${filename}"
+    sudo sed -i '$a'"${line}" "${filename}"
+  fi
 }
 
 # copy the boot-time launcher, owned like its directory (pi) instead of root
@@ -417,9 +635,12 @@ function install_autolaunch_script() {
   sudo chown "${autolaunch_user_group}" "${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
 }
 
-function apply_common_modifications_on_SD () {
+# SD Creation Management ######################################################
+
+# modifications made once, when the image is generated: silent and fast boot
+function apply_base_modifications() {
   trace "####################################"
-  trace "apply_common_modifications_on_SD ###"
+  trace "apply_base_modifications ###########"
 
   #
   # boot/cmdline.txt
@@ -441,63 +662,17 @@ function apply_common_modifications_on_SD () {
   filename="${BOOT_DIRECTORY}/config.txt"
   trace "## Apply modifications to ${filename}"
 
-  # no black border, except on a composite output where the firmware default overscan suits CRT TVs
-  if [[ -z "${tv_output}" ]]; then
-    # uncomment "disable_overscan=1"
-    trace "uncomment disable_overscan=1"
-    sudo sed -i '0,/#disable_overscan/ s//disable_overscan/' "${filename}"
-  fi
-
-  #     Overscan margins computed from a percentage (option -r) or given in pixels (option -b)
-  if ! [[ -z "${shrink}" ]] || ! [[ -z "${borders}" ]]; then
-    trace "## Overscan ${shrink}${borders}"
-    replace_setting "${filename}" disable_overscan "disable_overscan=0"
-    replace_setting "${filename}" overscan_left "overscan_left=${overscan_left}"
-    replace_setting "${filename}" overscan_right "overscan_right=${overscan_right}"
-    replace_setting "${filename}" overscan_top "overscan_top=${overscan_top}"
-    replace_setting "${filename}" overscan_bottom "overscan_bottom=${overscan_bottom}"
-    # apply the overscan to the RetroArch layer too
-    replace_setting "${filename}" overscan_scale "overscan_scale=1"
-  fi
-
   # Disable large rainbow screen on initial boot
-  trace "add disable_splash=1"
-  sudo sed -i '$adisable_splash=1' "${filename}"
+  add_line_once "${filename}" "disable_splash=1"
 
   # disable warnings such as undervoltage/overheating
-  trace "add avoid_warnings=1"
-  sudo sed -i '$aavoid_warnings=1' "${filename}"
+  add_line_once "${filename}" "avoid_warnings=1"
 
   # no firmware delay before loading the kernel
-  trace "add boot_delay=0"
-  sudo sed -i '$aboot_delay=0' "${filename}"
+  add_line_once "${filename}" "boot_delay=0"
 
   # no bluetooth on cabinets
-  trace "add dtoverlay=disable-bt"
-  sudo sed -i '$adtoverlay=disable-bt' "${filename}"
-
-  #     Display rotation (option -R)
-  if ! [[ -z "${display_rotate}" ]]; then
-    trace "add display_rotate=${display_rotate} (${rotation}°)"
-    sudo sed -i '$adisplay_rotate='"${display_rotate}" "${filename}"
-  fi
-
-  #     Forced HDMI mode (option -m)
-  if ! [[ -z "${hdmi_format}" ]]; then
-    trace "add hdmi_group=${hdmi_group} hdmi_mode=${hdmi_mode} (${hdmi_format})"
-    sudo sed -i '$ahdmi_group='"${hdmi_group}" "${filename}"
-    sudo sed -i '$ahdmi_mode='"${hdmi_mode}" "${filename}"
-  fi
-
-  #     Composite output, 4:3 (option -t)
-  if ! [[ -z "${tv_output}" ]]; then
-    trace "add enable_tvout=1"
-    sudo sed -i '$aenable_tvout=1' "${filename}"
-    trace "add sdtv_mode=${sdtv_mode} (${tv_output})"
-    sudo sed -i '$asdtv_mode='"${sdtv_mode}" "${filename}"
-    trace "add sdtv_aspect=1 for 4:3"
-    sudo sed -i '$asdtv_aspect=1' "${filename}"
-  fi
+  add_line_once "${filename}" "dtoverlay=disable-bt"
 
   #
   # retropie/opt/retropie/configs/all/runcommand.cfg
@@ -521,28 +696,6 @@ function apply_common_modifications_on_SD () {
     replace_setting "${filename}" video_font_enable 'video_font_enable = "false"'
   done
 
-
-  #
-  # retropie/opt/retropie/configs/all/retroarch.cfg
-  #
-  filename="${WORKING_DIRECTORY}/opt/retropie/configs/all/retroarch.cfg"
-
-  #     No smoothing for sharp pixels (option -n, or needed by scanlines). Otherwise RetroArch default (smoothing) is kept
-  if ! [[ -z "${nosmooth}" ]] || ! [[ -z "${shader_file}" ]]; then
-    replace_setting "${filename}" video_smooth 'video_smooth = "false"'
-  fi
-
-  #     Scanlines with a crt-pi shader
-  if ! [[ -z "${shader_file}" ]]; then
-    trace "## Scanlines ${scanlines} with shader ${SHADERS_DIRECTORY}/${shader_file}"
-    if ! [[ -f "${WORKING_DIRECTORY}${SHADERS_DIRECTORY}/${shader_file}" ]]; then
-      exitonerror "Shader introuvable dans l'image : ${SHADERS_DIRECTORY}/${shader_file}"
-    fi
-
-    replace_setting "${filename}" video_shader_enable 'video_shader_enable = "true"'
-    replace_setting "${filename}" video_shader 'video_shader = "'"${SHADERS_DIRECTORY}/${shader_file}"'"'
-  fi
-
   #
   # Splash screen management
   #
@@ -558,19 +711,6 @@ function apply_common_modifications_on_SD () {
   trace "## SSH enabling"
   trace "touch ${filename} to activate the SSH"
   sudo touch "${filename}"
-
-  #
-  # Audio setup
-  #
-  filename="${WORKING_DIRECTORY}/etc/asound.conf"
-
-  #     Sound on the jack output instead of HDMI (option -a jack). hdmi keeps the default output
-  if [[ "${audio_output}" == "jack" ]]; then
-    trace "add 'pcm.!default {type hw card 1}' in file ${filename}"
-    echo "pcm.!default {type hw card 1}" | sudo tee "${filename}"
-    trace "add 'ctl.!default {type hw card 1}' in file ${filename}"
-    echo "ctl.!default {type hw card 1}" | sudo tee --append "${filename}"
-  fi
 
   #
   # No console output when launching games
@@ -632,14 +772,166 @@ function apply_common_modifications_on_SD () {
   done
 }
 
+# display settings (options -l -n -r -b -m -t -R): can be applied again on a generated image
+function apply_display_settings() {
+  trace "####################################"
+  trace "apply_display_settings #############"
+
+  local filename="${BOOT_DIRECTORY}/config.txt"
+  trace "## Apply display settings to ${filename}"
+
+  #     Overscan margins computed from a percentage (option -r) or given in pixels (option -b)
+  if ! [[ -z "${shrink}" ]] || ! [[ -z "${borders}" ]]; then
+    trace "## Overscan ${shrink}${borders}"
+    replace_setting "${filename}" disable_overscan "disable_overscan=0"
+    replace_setting "${filename}" overscan_left "overscan_left=${overscan_left}"
+    replace_setting "${filename}" overscan_right "overscan_right=${overscan_right}"
+    replace_setting "${filename}" overscan_top "overscan_top=${overscan_top}"
+    replace_setting "${filename}" overscan_bottom "overscan_bottom=${overscan_bottom}"
+    # apply the overscan to the RetroArch layer too
+    replace_setting "${filename}" overscan_scale "overscan_scale=1"
+  else
+    # no margin left from a previous -r or -b
+    comment_setting "${filename}" "overscan_(left|right|top|bottom)"
+    if ! [[ -z "${tv_output}" ]]; then
+      # composite output: the firmware default overscan suits CRT TVs
+      comment_setting "${filename}" disable_overscan
+    else
+      # no black border
+      set_setting_in_place "${filename}" disable_overscan "disable_overscan=1"
+    fi
+  fi
+
+  #     Display rotation (option -R)
+  set_active_setting "${filename}" display_rotate "${display_rotate:+display_rotate=${display_rotate}}"
+
+  #     Forced HDMI mode (option -m)
+  set_active_setting "${filename}" hdmi_group "${hdmi_group:+hdmi_group=${hdmi_group}}"
+  set_active_setting "${filename}" hdmi_mode "${hdmi_mode:+hdmi_mode=${hdmi_mode}}"
+
+  #     Composite output, 4:3 (option -t)
+  set_active_setting "${filename}" enable_tvout "${tv_output:+enable_tvout=1}"
+  set_active_setting "${filename}" sdtv_mode "${sdtv_mode:+sdtv_mode=${sdtv_mode}}"
+  set_active_setting "${filename}" sdtv_aspect "${tv_output:+sdtv_aspect=1}"
+
+  #
+  # retropie/opt/retropie/configs/all/retroarch.cfg
+  #
+  filename="${WORKING_DIRECTORY}/opt/retropie/configs/all/retroarch.cfg"
+  trace "## Apply display settings to ${filename}"
+
+  #     No smoothing for sharp pixels (option -n, or needed by scanlines). Otherwise RetroArch default (smoothing)
+  if ! [[ -z "${nosmooth}" ]] || ! [[ -z "${shader_file}" ]]; then
+    replace_setting "${filename}" video_smooth 'video_smooth = "false"'
+  else
+    set_active_setting "${filename}" video_smooth
+  fi
+
+  #     Scanlines with a crt-pi shader
+  if ! [[ -z "${shader_file}" ]]; then
+    trace "## Scanlines ${scanlines} with shader ${SHADERS_DIRECTORY}/${shader_file}"
+    if ! [[ -f "${WORKING_DIRECTORY}${SHADERS_DIRECTORY}/${shader_file}" ]]; then
+      exitonerror "Shader introuvable dans l'image : ${SHADERS_DIRECTORY}/${shader_file}"
+    fi
+
+    replace_setting "${filename}" video_shader_enable 'video_shader_enable = "true"'
+    replace_setting "${filename}" video_shader 'video_shader = "'"${SHADERS_DIRECTORY}/${shader_file}"'"'
+  else
+    set_active_setting "${filename}" video_shader
+  fi
+}
+
+# sound settings (option -a): can be applied again on a generated image
+function apply_sound_settings() {
+  local filename="${WORKING_DIRECTORY}/etc/asound.conf"
+
+  #     Sound on the jack output instead of HDMI (option -a jack). hdmi keeps the default output
+  if [[ "${audio_output}" == "jack" ]]; then
+    trace "write sound on the jack output in file ${filename}"
+    echo "${JACK_AUDIO_LINES}" | sudo tee "${filename}" > /dev/null
+  elif [[ -f "${filename}" && "$(cat "${filename}")" == "${JACK_AUDIO_LINES}" ]]; then
+    trace "remove ${filename}: sound back on the default output"
+    sudo rm "${filename}"
+  fi
+}
+
+# controller (option -c): copy its RetroArch configuration, replacing the one installed before ($1)
+function apply_controller_settings() {
+  local previous_controller="$1"
+  local user_group="$(stat -c "%U:%G" "${JOYPAD_CONFIGURATION_DIRECTORY}")"
+
+  if [[ -z "${controller_file}" ]]; then
+    return
+  fi
+
+  local controller_filename=$(basename -- "${controller_file}")
+  if [[ -n "${previous_controller}" && "${previous_controller}" != "${controller_filename}" && -f "${JOYPAD_CONFIGURATION_DIRECTORY}/${previous_controller}" ]]; then
+    trace "Remove the previous controller file ${previous_controller}"
+    sudo rm "${JOYPAD_CONFIGURATION_DIRECTORY}/${previous_controller}"
+  fi
+  trace "Copy controller file ${controller_file} to ${JOYPAD_CONFIGURATION_DIRECTORY}/${controller_filename}"
+  sudo cp "${controller_file}" "${JOYPAD_CONFIGURATION_DIRECTORY}/${controller_filename}"
+  sudo chown "${user_group}" "${JOYPAD_CONFIGURATION_DIRECTORY}/${controller_filename}"
+}
+
+# value of a key in the options record of the mounted image
+function recorded_option() {
+  local filename="${BOOT_DIRECTORY}/${OPTIONS_RECORD_FILENAME}"
+  if [[ -f "${filename}" ]]; then
+    sed -n 's/^'"$1"'=//p' "${filename}" | tail -n 1
+  fi
+}
+
+# write the options used in /boot, as long_name=value lines (files: name only).
+# With --modify, the generation options (mode, game) of the previous record are kept.
+function write_options_record() {
+  local filename="${BOOT_DIRECTORY}/${OPTIONS_RECORD_FILENAME}"
+  local spec value version
+  local lines=()
+
+  version="$(git -C "$(dirname "${BASH_SOURCE[0]}")" describe --always --dirty 2> /dev/null)"
+  lines+=("# Options utilisées par generate-generic-image.sh, relues par l'éditeur de configuration")
+  lines+=("# Ne pas modifier à la main : utiliser --modify")
+  lines+=("generator_version=${version:-inconnue}")
+
+  for spec in "${OPTIONS[@]}"; do
+    read_option "${spec}"
+    if [[ " mode game ${SETTINGS_CATEGORIES} " != *" ${opt_category} "* || "${opt_long}" == "modify" ]]; then
+      continue
+    fi
+    if [[ -n "${modify_target}" && " ${SETTINGS_CATEGORIES} " != *" ${opt_category} "* ]]; then
+      value="$(recorded_option "${opt_long}")"
+    elif [[ -n "${modify_target}" && "${opt_category}" == "controller" && -z "${!opt_var}" ]]; then
+      value="$(recorded_option "${opt_long}")"
+    else
+      value="${!opt_var}"
+      if [[ -n "${value}" && " file dir " == *" ${opt_type} "* ]]; then
+        value="$(basename -- "${value}")"
+      fi
+    fi
+    if [[ -n "${value}" ]]; then
+      lines+=("${opt_long}=${value}")
+    fi
+  done
+  if [[ -n "${modify_target}" ]]; then
+    lines+=("generated=$(recorded_option generated)")
+    lines+=("modified=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+  else
+    lines+=("generated=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+  fi
+
+  trace "## Write the options used in ${filename}"
+  printf '%s\n' "${lines[@]}" | sudo tee "${filename}" > /dev/null
+}
+
 function create_Generic_SD () {
   trace "##########################"
   trace "create_Generic_SD ########"
 
-  #
-  # apply basics modifications
-  #
-  apply_common_modifications_on_SD
+  apply_base_modifications
+  apply_display_settings
+  apply_sound_settings
+  apply_controller_settings
 
   install_autolaunch_script "${AUTOLAUNCH_SCRIPT_FILENAME_GenericLaunch}"
 }
@@ -648,10 +940,9 @@ function create_Specific_SD () {
   trace "###########################"
   trace "create_Specific_SD ########"
 
-  #
-  # apply basics modifications
-  #
-  apply_common_modifications_on_SD
+  apply_base_modifications
+  apply_display_settings
+  apply_sound_settings
 
   # get user & group of roms directory in mounting situation
   local user_group="$(stat -c "%U:%G" "${ROMS_DIRECTORY}")"
@@ -673,7 +964,7 @@ function create_Specific_SD () {
     sudo cp "${gamefile}" "${ROMS_DIRECTORY}/${corename}/"
     sudo chown "${user_group}" "${ROMS_DIRECTORY}/${corename}/${gamename}"
   else
-    read -p "Le jeu est dans un répertoire core inconnu. Time to check " -n1 -s
+    pause "Le jeu est dans un répertoire core inconnu. Time to check "
     exitonerror "Le jeu est dans un répertoire core inconnu : ${corename}"
   fi
 
@@ -689,7 +980,7 @@ function create_Specific_SD () {
     fi
   else
     if ! grep -q "^default *= *\"..*\"" "${filename}"; then
-      exitonerror "Pas d'émulateur par défaut pour ${corename} : un choix serait demandé au démarrage. Utiliser l'option -e (voir ${filename})"
+      exitonerror "Pas d'émulateur par défaut pour ${corename} : un choix serait demandé au démarrage. Utiliser l'option $(option_names --emulator) (voir ${filename})"
     fi
     trace "default emulator : $(grep "^default *=" "${filename}")"
   fi
@@ -703,14 +994,7 @@ function create_Specific_SD () {
 
   fi
 
-  # Controller file
-  if [[ ! -z "${controller_file}" ]]; then
-
-    local controller_filename=$(basename -- "${controller_file}")
-    trace "Copy controller file ${controller_file} to ${JOYPAD_CONFIGURATION_DIRECTORY}/${controller_filename}"
-    sudo cp "${controller_file}" "${JOYPAD_CONFIGURATION_DIRECTORY}/${controller_filename}"
-    sudo chown "${user_group}" "${JOYPAD_CONFIGURATION_DIRECTORY}/${controller_filename}"
-  fi
+  apply_controller_settings
 
   #
   # core and game name replacement
@@ -731,67 +1015,106 @@ function create_Specific_SD () {
   done
 }
 
-# Parameters Management #################################################
+# change the display, sound and controller settings of a generated image or SD card
+function modify_SD () {
+  trace "##########################"
+  trace "modify_SD ################"
 
-function usage() {
-  echo
-  echo "USAGE:"
-  echo "image générique : $(basename "$0") --generic --input <image> --output <image> (options d'affichage et de son)"
-  echo "image spécifique : $(basename "$0") --specific <rom> --input <image> --output <image> (options du jeu) (options d'affichage et de son)"
-  echo
-  echo "Chaque option a une forme courte (-s rom) et une forme longue (--specific rom ou --specific=rom)."
-  echo
-  echo "  -g, --generic                     image générique (jeu sur clé USB)"
-  echo "  -s, --specific <rom>              image spécifique : jeu à installer"
-  echo "  -i, --input <image>               image RetroPie d'origine"
-  echo "  -o, --output <image>              image à générer"
-  echo "  -h, --help                        cette aide"
-  echo
-  echo "options du jeu :"
-  echo "  -e, --emulator <émulateur>        émulateur forcé, par exemple lr-mame2003"
-  echo "  -c, --controller <fichier.cfg>    configuration de manette à installer"
-  echo "  -S, --samples <répertoire>        samples à installer à côté du jeu"
-  echo
-  echo "options d'affichage et de son :"
-  echo "  -l, --scanlines horizontal|vertical"
-  echo "  -n, --no-smoothing                pas de lissage de l'image"
-  echo "  -r, --reduce <pourcentage>:<largeur>x<hauteur>[:<alignement>]"
-  echo "                                    réduction de l'écran, alignement : top, bottom, left, right, top-left, top-right, bottom-left, bottom-right"
-  echo "  -b, --border left=N,right=N,top=N,bottom=N"
-  echo "                                    bordures noires en pixels (côtés absents : 0), ne se combine pas avec -r"
-  echo "  -m, --hdmi-mode monitor_640x480_60hz|monitor_800x600_60hz|monitor_1024x768_60hz|monitor_1280x1024_60hz|tv_720p_60hz|tv_1080p_60hz"
-  echo "                                    mode HDMI forcé"
-  echo "  -t, --tv-out pal|ntsc             sortie composite 4:3, ne se combine pas avec -m"
-  echo "  -R, --rotate 90|180|270           rotation de l'écran dans le sens horaire"
-  echo "  -a, --audio jack|hdmi             sortie du son"
-  echo
+  if ! [[ -f "${BOOT_DIRECTORY}/${OPTIONS_RECORD_FILENAME}" ]]; then
+    warning "Pas de ${OPTIONS_RECORD_FILENAME} : image générée avant l'enregistrement des options, ou non générée par ce script"
+  fi
+
+  apply_display_settings
+  apply_sound_settings
+  apply_controller_settings "$(recorded_option controller)"
 }
 
-# long option names (without --) and their short equivalent
-declare -A LONG_OPTIONS=(
-  [generic]=g [specific]=s [input]=i [output]=o [help]=h
-  [emulator]=e [controller]=c [samples]=S
-  [scanlines]=l [no-smoothing]=n [reduce]=r [border]=b [hdmi-mode]=m [tv-out]=t [rotate]=R [audio]=a
-)
-# short options without value
-FLAG_OPTIONS="ghn"
+# Parameters Management #################################################
 
-# "-s (--specific)" for error messages
-function option_names() {
-  local name
-  for name in "${!LONG_OPTIONS[@]}"; do
-    if [[ "${LONG_OPTIONS[${name}]}" == "$1" ]]; then
-      echo "-$1 (--${name})"
-      return
-    fi
+# escape a string for JSON
+function json_string() {
+  local value="${1//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "${value}"
+}
+
+# describe the options, categories and conflicts in JSON, for the configuration editor
+function describe_options() {
+  local spec entry name label pair first second separator value values
+
+  echo "{"
+  echo '  "categories": ['
+  separator=""
+  for entry in "${CATEGORIES[@]}"; do
+    IFS='|' read -r name label <<< "${entry}"
+    value="false"
+    [[ " ${SETTINGS_CATEGORIES} " == *" ${name} "* ]] && value="true"
+    echo "${separator}    {\"name\": $(json_string "${name}"), \"label\": $(json_string "${label}"), \"settings\": ${value}}"
+    separator=","
   done
-  echo "-$1"
+  echo '  ],'
+  echo '  "options": ['
+  separator=""
+  for spec in "${OPTIONS[@]}"; do
+    read_option "${spec}"
+    values=""
+    for value in ${opt_values}; do
+      values+="${values:+, }$(json_string "${value}")"
+    done
+    echo "${separator}    {\"short\": $(json_string "${opt_short}"), \"long\": $(json_string "${opt_long}"), \"type\": $(json_string "${opt_type}"), \"values\": [${values}], \"label\": $(json_string "${opt_label}"), \"category\": $(json_string "${opt_category}"), \"description\": $(json_string "${opt_description}")}"
+    separator=","
+  done
+  echo '  ],'
+  echo '  "conflicts": ['
+  separator=""
+  for pair in "${CONFLICTS[@]}"; do
+    read -r first second <<< "${pair}"
+    echo "${separator}    [$(json_string "${first}"), $(json_string "${second}")]"
+    separator=","
+  done
+  echo '  ],'
+  echo "  \"record\": $(json_string "/boot/${OPTIONS_RECORD_FILENAME}")"
+  echo "}"
+}
+
+function usage() {
+  local entry name label spec left
+
+  echo
+  echo "USAGE:"
+  echo "image générique : $(basename "$0") --generic --input <image> --output <image> (options)"
+  echo "image spécifique : $(basename "$0") --specific <rom> --input <image> --output <image> (options)"
+  echo "modification : $(basename "$0") --modify <image.img ou /dev/sdX> (options de manette, d'affichage et de son)"
+  echo
+  echo "Chaque option a une forme courte (-s rom) et une forme longue (--specific rom ou --specific=rom)."
+  for entry in "${CATEGORIES[@]}"; do
+    IFS='|' read -r name label <<< "${entry}"
+    echo
+    echo "${label} :"
+    for spec in "${OPTIONS[@]}"; do
+      read_option "${spec}"
+      [[ "${opt_category}" == "${name}" ]] || continue
+      left="  -${opt_short}, --${opt_long}"
+      if [[ "${opt_type}" == "choice" ]]; then
+        left+=" ${opt_values// /|}"
+      elif [[ "${opt_type}" != "flag" ]]; then
+        left+=" <${opt_label}>"
+      fi
+      if (( ${#left} > 34 )); then
+        echo "${left}"
+        left=""
+      fi
+      # pad by characters, not bytes (accented labels)
+      printf '%s%*s%s\n' "${left}" $((36 - ${#left})) "" "${opt_description}"
+    done
+  done
+  echo
 }
 
 # translate the long options (--name value or --name=value) into the short ones read by getopts
 function translate_long_options() {
   translated_options=()
-  local arg name short
+  local arg name
   while (( $# > 0 )); do
     arg="$1"
     shift
@@ -802,19 +1125,17 @@ function translate_long_options() {
         ;;
       --*)
         name="${arg%%=*}"
-        name="${name#--}"
-        short="${LONG_OPTIONS[${name}]}"
-        if [[ -z "${short}" ]]; then
+        if ! find_option "${name}"; then
           usage
-          exitonerror "L'option \"--${name}\" est invalide"
+          exitonerror "L'option \"${name}\" est invalide"
         fi
         if [[ "${arg}" == *=* ]]; then
-          if [[ "${FLAG_OPTIONS}" == *"${short}"* ]]; then
-            exitonerror "L'option $(option_names "${short}") ne prend pas de valeur"
+          if [[ "${opt_type}" == "flag" ]]; then
+            exitonerror "L'option $(option_names "${name}") ne prend pas de valeur"
           fi
-          translated_options+=("-${short}" "${arg#*=}")
+          translated_options+=("-${opt_short}" "${arg#*=}")
         else
-          translated_options+=("-${short}")
+          translated_options+=("-${opt_short}")
         fi
         ;;
       *)
@@ -825,97 +1146,22 @@ function translate_long_options() {
 }
 
 function get_options() {
+  local spec optstring=":" option
 
-  while getopts ":gc:e:S:s:i:o:l:r:b:a:t:m:R:nh" option ;
+  # getopts string from the option table: a letter, followed by ":" when the option takes a value
+  for spec in "${OPTIONS[@]}"; do
+    read_option "${spec}"
+    optstring+="${opt_short}"
+    [[ "${opt_type}" != "flag" ]] && optstring+=":"
+  done
+
+  while getopts "${optstring}" option ;
   do
-    trace "getopts OPTIND=$OPTIND, Option=$option, OPTARG=$OPTARG, OPTERR=$OPTERR"
     case "${option}" in
-
-      #Input Retropie Image
-      i)
-        original_retropie_image="${OPTARG}"
-        trace "Le fichier d'entrée est ${original_retropie_image}"
-	      ;;
-
-      #Ouput image result
-      o)
-        result_image="${OPTARG}"
-	      trace "Le fichier de sortie est ${result_image}"
-        ;;
-
-      #Specific with filepath to game to install
-      s)
-        trace "Specific Mode ON"
-        gamefile=${OPTARG}
-        specific="ON"
-        ;;
-
-      #Specific samples directory to copy beside the game
-      S)
-        trace "Samples directory"
-        samples_dir=${OPTARG}
-        ;;
-
-      #Specific controller file name to copy onto SD Card
-      c)
-        trace "Controller filename"
-        controller_file=${OPTARG}
-        ;;
-
-      # Emulator name
-      e)
-        trace "Emulator name"
-        emulatorname=${OPTARG}
-        ;;
-
-      g)
-        trace "Generic Mode ON"
-        generic="ON"
-        ;;
-
-      a)
-        trace "Audio output"
-        audio_output=${OPTARG}
-        ;;
-
-      t)
-        trace "Composite output"
-        tv_output=${OPTARG}
-        ;;
-
-      m)
-        trace "HDMI mode"
-        hdmi_format=${OPTARG}
-        ;;
-
-      R)
-        trace "Rotation"
-        rotation=${OPTARG}
-        ;;
-
-      b)
-        trace "Borders"
-        borders=${OPTARG}
-        ;;
-
-      l)
-        trace "Scanlines"
-        scanlines=${OPTARG}
-        ;;
-
-      n)
-        trace "No smoothing"
-        nosmooth="ON"
-        ;;
-
-      r)
-        trace "Shrink"
-        shrink=${OPTARG}
-        ;;
 
       #Missing Arguments
       :)
-        exitonerror "L'option $(option_names "${OPTARG}") requiert un argument"
+        exitonerror "L'option $(option_names "-${OPTARG}") requiert un argument"
         ;;
 
       #Invalid Option
@@ -924,10 +1170,15 @@ function get_options() {
         exitonerror "L'option \"-${OPTARG}\" est invalide"
         ;;
 
-      # Help
-      h)
-        usage
-        exit 0
+      # every other option sets its variable: ON for a flag, its value otherwise
+      *)
+        find_option "-${option}"
+        if [[ "${opt_type}" == "flag" ]]; then
+          printf -v "${opt_var}" '%s' "ON"
+        else
+          printf -v "${opt_var}" '%s' "${OPTARG}"
+        fi
+        trace "Option -${opt_short} (--${opt_long}) ${OPTARG}"
         ;;
     esac
   done
@@ -936,26 +1187,49 @@ function get_options() {
 # Main start here #######################################################
 
 translate_long_options "$@"
+# --help and --describe only print, without trace nor log
+if [[ " ${translated_options[*]} " == *" -h "* ]]; then
+  usage
+  exit 0
+fi
+if [[ " ${translated_options[*]} " == *" -d "* ]]; then
+  describe_options
+  exit 0
+fi
 get_options "${translated_options[@]}"
 
 install_prerequisites
 
 check_parameters
 
+if ! [[ -z "${modify_target}" ]]; then
+  if [[ -b "${modify_target}" ]]; then
+    mount_sd_card "${modify_target}"
+  else
+    mount_image "${modify_target}"
+  fi
+  modify_SD
+  write_options_record
+  pause $'Les modifications ont été appliquées.\nVérifiez le résultat avant démontage des répertoires... '
+  umount_image
+  exit 0
+fi
+
 prepare_image
 
-mount_image
+mount_image "${TEMP_IMAGE}"
 
-if ! [[ -z ${generic} ]]; then
+if ! [[ -z "${generic}" ]]; then
   create_Generic_SD
 fi
 
-if ! [[ -z ${specific} ]]; then
+if ! [[ -z "${gamefile}" ]]; then
   create_Specific_SD
 fi
 
-read -p $'Les modifications ont été appliquées.\nVérifiez le résultat avant démontage des répertoires... ' -n1 -s
-echo
+write_options_record
+
+pause $'Les modifications ont été appliquées.\nVérifiez le résultat avant démontage des répertoires... '
 umount_image
 
 prepare_result

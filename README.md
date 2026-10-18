@@ -81,6 +81,10 @@ source/generate-image/generate-generic-image.sh --specific <rom> \
   [--emulator <émulateur>] [--controller <fichier .cfg>] [--samples <répertoire>] \
   [<options d'affichage et de son>]
 
+# modification d'une image générée ou d'une carte SD (voir §1.10)
+source/generate-image/generate-generic-image.sh --modify <image.img ou /dev/sdX> \
+  [--controller <fichier .cfg>] [<options d'affichage et de son>]
+
 # options d'affichage et de son
   [--scanlines <scanlines>] [--no-smoothing] \
   [--reduce <pourcentage>:<largeur>x<hauteur>[:<alignement>] | --border <bordures>] \
@@ -106,9 +110,12 @@ Chaque option a une forme courte et une forme longue, au choix : `-s <rom>`, `--
 | `-t pal\|ntsc`<br>`--tv-out pal\|ntsc` | Sortie vidéo composite en 4:3, pour un téléviseur cathodique. L'overscan par défaut du firmware est conservé (bordure de 32 px), sauf avec `-r` ou `-b`. Ne se combine pas avec `-m`. |
 | `-R 90\|180\|270`<br>`--rotate 90\|180\|270` | Rotation de tout l'affichage, dans le sens horaire. |
 | `-a jack\|hdmi`<br>`--audio jack\|hdmi` | Sortie du son. `jack` envoie le son sur la prise jack. `hdmi` garde la sortie par défaut de l'image (HDMI) : c'est le comportement sans `-a`. |
+| `-M <image ou carte>`<br>`--modify <image ou carte>` | Modifie les réglages de manette, d'affichage et de son d'une image générée (`.img`) ou d'une carte SD (`/dev/sdX`). Voir [§1.10](#110-modifier-une-image-générée-ou-une-carte-sd---modify). |
+| `-B`<br>`--batch` | Sans pause : le script ne demande pas de vérifier l'image avant le démontage, et s'arrête sans attendre sur un système inconnu. Utilisé par l'éditeur de configuration. |
+| `-d`<br>`--describe` | Décrit toutes les options au format JSON (noms, type, valeurs possibles, catégorie, incompatibilités) et s'arrête. L'éditeur de configuration construit son formulaire à partir de cette description. |
 | `-h`<br>`--help` | Affiche la syntaxe d'appel et s'arrête. |
 
-`-g` et `-s` s'excluent mutuellement, et l'un des deux est obligatoire. `-e`, `-c` et `-S` ne sont pris en compte qu'en mode spécifique. Une valeur inconnue, ou une combinaison interdite (`-r` avec `-b`, `-t` avec `-m`), arrête le script avant toute modification.
+Il faut choisir exactement un mode : `-g`, `-s` ou `-M`. `-e` et `-S` ne servent qu'en mode spécifique. `-i` et `-o` sont obligatoires pour une génération. Une valeur inconnue, ou une combinaison interdite (`-r` avec `-b`, `-t` avec `-m`), arrête le script avant toute modification.
 
 Modes HDMI de `-m`. Le firmware connaît deux familles de modes : **moniteur** (norme VESA DMT, *Display Monitor Timings*, `hdmi_group=2`) et **téléviseur** (norme CEA-861, *Consumer Electronics Association*, `hdmi_group=1`). Le numéro `hdmi_mode` dépend de la famille. Source : documentation Raspberry Pi, *legacy config.txt options*.
 
@@ -126,11 +133,12 @@ Modes HDMI de `-m`. Le firmware connaît deux familles de modes : **moniteur** (
 1. L'image d'origine est copiée dans `$HOME/out.img`.
 2. Cette copie est associée à un périphérique loop. La partition 2 est montée sur `work_temp/` dans le répertoire courant, la partition 1 sur `work_temp/boot`. Le mot de passe `sudo` est demandé.
 3. Les modifications décrites dans la [section 3](#3-modifications-appliquées-à-limage) sont appliquées.
-4. **Le script fait une pause** : « Les modifications ont été appliquées… ». Vous pouvez alors inspecter l'image montée dans `work_temp/`. Appuyez sur une touche pour continuer.
-5. Les partitions sont démontées, `work_temp/` est supprimé et le périphérique loop est libéré. Ce démontage a lieu aussi si le script s'arrête sur une erreur ou sur un Ctrl-C après le montage. `work_temp/` n'est jamais supprimé si un montage est encore actif.
-6. `$HOME/out.img` est copié vers le fichier passé à `-o`.
+4. Les options utilisées sont enregistrées dans `/boot/mo5-options.conf` (voir [§3.1](#31-modifications-communes--g-et--s)).
+5. **Le script fait une pause** : « Les modifications ont été appliquées… ». Vous pouvez alors inspecter l'image montée dans `work_temp/`. Appuyez sur une touche pour continuer. Avec `--batch`, il n'y a pas de pause.
+6. Les partitions sont démontées, `work_temp/` est supprimé et le périphérique loop est libéré. Ce démontage a lieu aussi si le script s'arrête sur une erreur ou sur un Ctrl-C après le montage. `work_temp/` n'est jamais supprimé si un montage est encore actif.
+7. `$HOME/out.img` est copié vers le fichier passé à `-o`. Si le script est lancé avec `sudo`, l'image de travail est celle de l'utilisateur qui a lancé `sudo`, et l'image résultat lui appartient.
 
-Le script fait aussi une pause, puis s'arrête, si le système de la ROM est inconnu, c'est-à-dire si `roms/<système>` n'existe pas dans l'image. Le script est interactif et n'est pas prévu pour tourner sans surveillance.
+Le script fait aussi une pause, puis s'arrête, si le système de la ROM est inconnu, c'est-à-dire si `roms/<système>` n'existe pas dans l'image. Sans `--batch`, le script est interactif et n'est pas prévu pour tourner sans surveillance.
 
 Le journal est écrit dans `source/generate-image/generate-generic-image.log`.
 
@@ -218,6 +226,28 @@ RetroArch choisit le fichier d'après `input_device`, pas d'après le nom du fic
 
 ---
 
+### 1.10 Modifier une image générée ou une carte SD (`--modify`)
+
+```
+# image générée
+source/generate-image/generate-generic-image.sh --modify work/target/pacman.mame2003.mo5.img \
+  --border left=149,right=125,top=5
+
+# carte SD gravée, insérée dans le PC
+source/generate-image/generate-generic-image.sh --modify /dev/sdb --rotate 270 --hdmi-mode monitor_800x600_60hz --audio jack
+```
+
+`--modify` applique à nouveau les réglages de **manette, d'affichage et de son**, directement sur l'image ou sur la carte : il n'y a ni copie ni nouvelle image. Le jeu, l'émulateur et les samples ne changent pas. Les options de génération (`-s`, `-e`, `-S`, `-i`, `-o`) sont refusées.
+
+- **Tous les réglages d'affichage et de son sont remplacés** par ceux donnés sur la ligne de commande. Un réglage absent revient à sa valeur par défaut : par exemple, sans `--audio jack`, le son revient sur la sortie HDMI. Pour changer un seul réglage, redonnez aussi les autres. Ils sont dans `/boot/mo5-options.conf`, que l'éditeur de configuration relit.
+- **La manette :** avec `--controller`, la nouvelle configuration remplace celle installée à la génération. Sans `--controller`, la manette ne change pas.
+- **`/boot/mo5-options.conf`** est mis à jour, avec la date de modification. Les options de génération (jeu, émulateur) y sont conservées.
+- **Une image** ne doit pas être déjà associée à un périphérique loop (ouverte par un autre programme) : le script refuse de la modifier.
+- **Une carte SD** doit être indiquée comme disque entier (`/dev/sdb`, pas `/dev/sdb1`). Par sécurité, le script refuse un disque qui n'est ni amovible ni USB, ou qui contient le système en cours d'exécution. Les partitions montées automatiquement par le bureau à l'insertion sont démontées d'abord.
+- Le mot de passe `sudo` est demandé, comme pour une génération.
+
+Une image générée avant l'enregistrement des options n'a pas de `/boot/mo5-options.conf`. `--modify` fonctionne quand même, avec un avertissement.
+
 ## 2. Écrire l'image sur une carte SD
 
 Sous Linux, après avoir inséré une carte (formatée sous Windows ou macOS si besoin) :
@@ -296,6 +326,22 @@ Lignes ajoutées à la fin du fichier, dans cet ordre :
 | Changement | Condition |
 |---|---|
 | Crée le fichier vide `/boot/ssh` : le service SSH démarre au premier boot | Toujours |
+
+#### `/boot/mo5-options.conf` — options utilisées
+
+Ce fichier enregistre les options de génération et les réglages, une ligne `nom_long=valeur` par option donnée (pour un fichier, son nom seulement), plus la version du générateur et les dates. Il est sur la partition `/boot` (FAT), donc lisible depuis n'importe quel PC. L'éditeur de configuration le relit pour afficher les réglages d'une image ou d'une carte. Exemple :
+
+```
+# Options utilisées par generate-generic-image.sh, relues par l'éditeur de configuration
+# Ne pas modifier à la main : utiliser --modify
+generator_version=13d7ec7
+specific=Legend of Zelda, The - Link's Awakening DX (France) (Rev 1) (SGB Enhanced) (GB Compatible).zip
+emulator=lr-gambatte
+controller=Mega World.cfg
+no-smoothing=ON
+reduce=5:1024x768:bottom
+generated=2026-10-18T09:03:29Z
+```
 
 #### `/opt/retropie/configs/all/runcommand.cfg` — lanceur RetroPie
 
@@ -413,7 +459,7 @@ Pour qu'aucun choix d'émulateur ne puisse jamais apparaître, il est préférab
 
 | Changement | Condition |
 |---|---|
-| Le fichier `.cfg` est copié dans `/opt/retropie/configs/all/retroarch/autoconfig/` sous le même nom (propriétaire : celui de `roms`) | `-c <fichier .cfg>` |
+| Le fichier `.cfg` est copié dans `/opt/retropie/configs/all/retroarch/autoconfig/` sous le même nom (propriétaire : celui de ce répertoire, `pi`). Fonctionne aussi en mode générique | `-c <fichier .cfg>` |
 
 ### 3.4 Points d'attention
 
@@ -440,6 +486,7 @@ L'utilisateur est `pi`. Le mot de passe par défaut de RetroPie est `raspberry`,
 |---|---|---|
 | `/boot/config.txt` | Affichage (overscan, rotation, mode HDMI, sortie composite), Bluetooth, `boot_delay` | Au redémarrage |
 | `/boot/cmdline.txt` | Paramètres du noyau (console, messages de démarrage). **Une seule ligne** : ne pas ajouter de retour à la ligne | Au redémarrage |
+| `/boot/mo5-options.conf` | Options utilisées pour générer ou modifier l'image (voir [§3.1](#31-modifications-communes--g-et--s)) | Lu par l'éditeur de configuration |
 
 ### 4.2 Lancement du jeu
 
