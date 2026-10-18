@@ -27,7 +27,8 @@ from PySide6.QtCore import QProcess, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPixmap, QPolygon, QTextCursor
 from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame,
-                               QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QMainWindow,
+                               QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListView, QListWidget,
+                               QMainWindow,
                                QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea,
                                QSplitter, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
@@ -59,7 +60,9 @@ QLineEdit:focus, QComboBox:focus { border-color: #2f6fed; }
 QComboBox::drop-down { border: none; width: 26px; }
 QComboBox::down-arrow { image: url(ARROW); width: 10px; height: 6px; }
 QComboBox::down-arrow:disabled { image: url(ARROW_DISABLED); }
-QComboBox QAbstractItemView { border: 1px solid #cfd4dc; selection-background-color: #2f6fed; selection-color: white; }
+QComboBox QAbstractItemView { border: 1px solid #cfd4dc; background: white; outline: 0; padding: 2px; }
+QComboBox QAbstractItemView::item { color: #1f2430; background: white; padding: 6px 8px; min-height: 18px; }
+QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected { color: white; background: #2f6fed; }
 QLineEdit:disabled, QComboBox:disabled { background: #f0f1f3; color: #a0a6b0; }
 QToolButton { padding: 5px 10px; border: 1px solid #cfd4dc; border-radius: 6px; background: white; }
 QToolButton:hover { background: #f0f2f5; }
@@ -71,6 +74,14 @@ QStatusBar { background: white; border-top: 1px solid #e3e6eb; }
 
 
 # Fields ###############################################################
+
+
+def combo_box():
+    """A combo box whose list follows the style sheet (the default Fusion delegate ignores it: white on white)."""
+    combo = QComboBox()
+    combo.setView(QListView())
+    return combo
+
 
 
 class OptionField(QWidget):
@@ -90,7 +101,7 @@ class OptionField(QWidget):
             self.widget = QCheckBox(option["title"])
             self.widget.toggled.connect(self.changed)
         elif kind == "choice":
-            self.widget = QComboBox()
+            self.widget = combo_box()
             self.widget.addItem("Par défaut", "")
             for value in option["values"]:
                 self.widget.addItem(value, value)
@@ -485,7 +496,7 @@ class ModificationPage(QWidget):
         grid.addWidget(QLabel("Image"), 0, 0)
         grid.addWidget(self.image, 0, 1)
         grid.addWidget(button, 0, 2)
-        self.card_list = QComboBox()
+        self.card_list = combo_box()
         self.card_list.activated.connect(self.choose_card)
         button = QToolButton()
         button.setText("Actualiser")
