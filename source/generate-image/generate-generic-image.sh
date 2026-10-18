@@ -23,6 +23,8 @@ JOYPAD_CONFIGURATION_DIRECTORY="${WORKING_DIRECTORY}/opt/retropie/configs/all/re
 SHADERS_DIRECTORY="/opt/retropie/configs/all/retroarch/shaders"
 # options used to generate the image, read back by the configuration editor
 OPTIONS_RECORD_FILENAME="mo5-options.conf"
+# mount points of the read-only inspection (--inspect)
+INSPECT_DIRECTORY="work_temp_inspect"
 JACK_AUDIO_LINES=$'pcm.!default {type hw card 1}\nctl.!default {type hw card 1}'
 
 # the user who launched the script, even through sudo: owns the working and result images
@@ -44,6 +46,7 @@ TEMP_IMAGE="${REAL_HOME}/out.img"
 OPTIONS=(
   "g|generic|generic|flag|||mode|Image générique|image générique : le jeu est fourni plus tard sur une clé USB"
   "s|specific|gamefile|file||rom|mode|Image spécifique|image spécifique : jeu à installer. Le système est le nom du répertoire de la ROM (arcade, nes, snes…)"
+  "I|inspect|inspect_target|path||image ou carte|mode|Image ou carte à lire|affiche les réglages réels d'une image générée (.img) ou d'une carte SD (/dev/sdX), lue en lecture seule, comparés à /boot/mo5-options.conf"
   "M|modify|modify_target|path||image ou carte|mode|Image ou carte à modifier|modifie les réglages d'affichage, de son et de manette d'une image générée (.img) ou d'une carte SD (/dev/sdX)"
   "i|input|original_retropie_image|file||image|image|Image RetroPie d'origine|image RetroPie d'origine (jamais modifiée)"
   "o|output|result_image|path||image|image|Image à générer|image à générer (remplacée si elle existe)"
@@ -68,6 +71,9 @@ CONFLICTS=(
   "generic specific"
   "generic modify"
   "specific modify"
+  "generic inspect"
+  "specific inspect"
+  "modify inspect"
   "reduce border"
   "tv-out hdmi-mode"
 )
@@ -102,12 +108,13 @@ logFileName=
 translated_options=()
 loop=
 loop_created=
-modify_partitions=()
+inspect_mounts=()
 
 # option values (see OPTIONS)
 generic=
 gamefile=
 modify_target=
+inspect_target=
 original_retropie_image=
 result_image=
 emulatorname=
@@ -182,10 +189,10 @@ function install_prerequisites() {
 function check_parameters() {
   local spec pair first second value message
 
-  # exactly one of generic, specific or modify
-  if [[ -z "${generic}${gamefile}${modify_target}" ]]; then
+  # exactly one of generic, specific, modify or inspect
+  if [[ -z "${generic}${gamefile}${modify_target}${inspect_target}" ]]; then
     usage
-    exitonerror "Il faut choisir le mode : $(option_names --generic), $(option_names --specific) ou $(option_names --modify)"
+    exitonerror "Il faut choisir le mode : $(option_names --generic), $(option_names --specific), $(option_names --modify) ou $(option_names --inspect)"
   fi
 
   # options that cannot be used together
@@ -228,6 +235,19 @@ function check_parameters() {
     if ! [[ -f "${modify_target}" || -b "${modify_target}" ]]; then
       exitonerror "Image ou carte SD introuvable : ${modify_target}"
     fi
+  elif [[ -n "${inspect_target}" ]]; then
+    # with --inspect, nothing else than the target
+    for spec in "${OPTIONS[@]}"; do
+      read_option "${spec}"
+      if [[ -n "${!opt_var}" && " mode run " != *" ${opt_category} "* ]]; then
+        message="L'option -${opt_short} (--${opt_long}) ne sert pas avec $(option_names --inspect), qui ne fait que lire"
+        usage
+        exitonerror "${message}"
+      fi
+    done
+    if ! [[ -f "${inspect_target}" || -b "${inspect_target}" ]]; then
+      exitonerror "Image ou carte SD introuvable : ${inspect_target}"
+    fi
   else
     if [[ -z "${original_retropie_image}" ]]; then
       usage
@@ -247,50 +267,19 @@ function check_parameters() {
 
   # check shrink option (percent:WIDTHxHEIGHT[:alignment]) and compute the overscan margins in pixels
   if ! [[ -z "${shrink}" ]]; then
-    if ! [[ "${shrink}" =~ ^([0-9]+)(\.[0-9]+)?:([0-9]+)x([0-9]+)(:(top|bottom|left|right|top-left|top-right|bottom-left|bottom-right))?$ ]] || (( 10#${BASH_REMATCH[1]} >= 50 )); then
+    if ! reduce_margins "${shrink}"; then
       usage
       exitonerror "Option -r (--reduce) invalide : ${shrink} (format attendu : pourcentage:largeurxhauteur[:alignement], par exemple 5:1024x768 ou 5:1024x768:bottom, avec un pourcentage inférieur à 50 et un alignement parmi top, bottom, left, right, top-left, top-right, bottom-left, bottom-right)"
     fi
-    local shrink_percent="${shrink%%:*}"
-    local shrink_alignment="${BASH_REMATCH[6]}"
-    local overscan_horizontal=$(awk -v p="${shrink_percent}" -v w="${BASH_REMATCH[3]}" 'BEGIN { printf "%d", w * p / 200 + 0.5 }')
-    local overscan_vertical=$(awk -v p="${shrink_percent}" -v h="${BASH_REMATCH[4]}" 'BEGIN { printf "%d", h * p / 200 + 0.5 }')
-
-    # centered by default, the whole margin goes to the opposite side of the alignment
-    overscan_left=${overscan_horizontal}
-    overscan_right=${overscan_horizontal}
-    overscan_top=${overscan_vertical}
-    overscan_bottom=${overscan_vertical}
-    case "${shrink_alignment}" in
-      top*) overscan_top=0 ; overscan_bottom=$((overscan_vertical * 2)) ;;
-      bottom*) overscan_top=$((overscan_vertical * 2)) ; overscan_bottom=0 ;;
-    esac
-    case "${shrink_alignment}" in
-      *left) overscan_left=0 ; overscan_right=$((overscan_horizontal * 2)) ;;
-      *right) overscan_left=$((overscan_horizontal * 2)) ; overscan_right=0 ;;
-    esac
     trace "Shrink ${shrink} : overscan gauche ${overscan_left} px, droite ${overscan_right} px, haut ${overscan_top} px, bas ${overscan_bottom} px"
   fi
 
   # check border option (left=N,right=N,top=N,bottom=N in pixels, missing sides are 0)
   if ! [[ -z "${borders}" ]]; then
-    overscan_left=0
-    overscan_right=0
-    overscan_top=0
-    overscan_bottom=0
-    local border
-    for border in ${borders//,/ }; do
-      if ! [[ "${border}" =~ ^(left|right|top|bottom)=([0-9]+)$ ]]; then
-        usage
-        exitonerror "Option -b (--border) invalide : ${border} (format attendu : left=N,right=N,top=N,bottom=N en pixels, par exemple left=20,right=20)"
-      fi
-      case "${BASH_REMATCH[1]}" in
-        left) overscan_left=$((10#${BASH_REMATCH[2]})) ;;
-        right) overscan_right=$((10#${BASH_REMATCH[2]})) ;;
-        top) overscan_top=$((10#${BASH_REMATCH[2]})) ;;
-        bottom) overscan_bottom=$((10#${BASH_REMATCH[2]})) ;;
-      esac
-    done
+    if ! border_margins "${borders}"; then
+      usage
+      exitonerror "Option -b (--border) invalide : ${borders} (format attendu : left=N,right=N,top=N,bottom=N en pixels, par exemple left=20,right=20)"
+    fi
     trace "Bordures ${borders} : overscan gauche ${overscan_left} px, droite ${overscan_right} px, haut ${overscan_top} px, bas ${overscan_bottom} px"
   fi
 
@@ -333,6 +322,61 @@ function check_parameters() {
   fi
 }
 
+# overscan margins of a --reduce value (percent:WIDTHxHEIGHT[:alignment]) in overscan_left/right/top/bottom; fails if invalid
+function reduce_margins() {
+  if ! [[ "$1" =~ ^([0-9]+)(\.[0-9]+)?:([0-9]+)x([0-9]+)(:(top|bottom|left|right|top-left|top-right|bottom-left|bottom-right))?$ ]] || (( 10#${BASH_REMATCH[1]} >= 50 )); then
+    return 1
+  fi
+  local percent="${1%%:*}"
+  local alignment="${BASH_REMATCH[6]}"
+  local horizontal=$(awk -v p="${percent}" -v w="${BASH_REMATCH[3]}" 'BEGIN { printf "%d", w * p / 200 + 0.5 }')
+  local vertical=$(awk -v p="${percent}" -v h="${BASH_REMATCH[4]}" 'BEGIN { printf "%d", h * p / 200 + 0.5 }')
+
+  # centered by default, the whole margin goes to the opposite side of the alignment
+  overscan_left=${horizontal}
+  overscan_right=${horizontal}
+  overscan_top=${vertical}
+  overscan_bottom=${vertical}
+  case "${alignment}" in
+    top*) overscan_top=0 ; overscan_bottom=$((vertical * 2)) ;;
+    bottom*) overscan_top=$((vertical * 2)) ; overscan_bottom=0 ;;
+  esac
+  case "${alignment}" in
+    *left) overscan_left=0 ; overscan_right=$((horizontal * 2)) ;;
+    *right) overscan_left=$((horizontal * 2)) ; overscan_right=0 ;;
+  esac
+}
+
+# overscan margins of a --border value (left=N,right=N,top=N,bottom=N, missing sides are 0); fails if invalid
+function border_margins() {
+  local border
+  overscan_left=0
+  overscan_right=0
+  overscan_top=0
+  overscan_bottom=0
+  for border in ${1//,/ }; do
+    [[ "${border}" =~ ^(left|right|top|bottom)=([0-9]+)$ ]] || return 1
+    case "${BASH_REMATCH[1]}" in
+      left) overscan_left=$((10#${BASH_REMATCH[2]})) ;;
+      right) overscan_right=$((10#${BASH_REMATCH[2]})) ;;
+      top) overscan_top=$((10#${BASH_REMATCH[2]})) ;;
+      bottom) overscan_bottom=$((10#${BASH_REMATCH[2]})) ;;
+    esac
+  done
+}
+
+# --border value of the current overscan margins: the non-zero sides
+function margins_as_border() {
+  local side value result=""
+  for side in left right top bottom; do
+    value="overscan_${side}"
+    if (( ${!value:-0} != 0 )); then
+      result+="${result:+,}${side}=${!value}"
+    fi
+  done
+  echo "${result}"
+}
+
 # Error Management #######################################################
 
 function init_log_file() {
@@ -350,8 +394,12 @@ function init_log_file() {
 function log_message() {
   local message="[$(date -u)][$1] $2"
 
-  # display to console
-  echo "${message}"
+  # display to console (on stderr with --inspect, whose output is the settings)
+  if [[ -n "${inspect_target}" ]]; then
+    echo "${message}" >&2
+  else
+    echo "${message}"
+  fi
 
   #init log file if needed
   init_log_file
@@ -1040,6 +1088,245 @@ function modify_SD () {
   apply_controller_settings "$(recorded_option controller)"
 }
 
+# Inspection (--inspect) ###############################################
+
+# read-only access to a partition: the mount point the desktop already gave it, or a read-only mount; result in inspect_mountpoint
+function mount_for_inspection() {
+  local partition="$1" name="$2"
+  inspect_mountpoint="$(lsblk -lno MOUNTPOINT "${partition}" | head -n 1)"
+  if [[ -z "${inspect_mountpoint}" ]]; then
+    inspect_mountpoint="${INSPECT_DIRECTORY}/${name}"
+    mkdir -p "${inspect_mountpoint}"
+    trace "Montage de ${partition} en lecture seule sur ${inspect_mountpoint}"
+    sudo mount -o ro "${partition}" "${inspect_mountpoint}" || exitonerror "Impossible de monter ${partition} en lecture seule"
+    inspect_mounts+=("${inspect_mountpoint}")
+  else
+    trace "${partition} déjà monté sur ${inspect_mountpoint} : lu sur place"
+  fi
+}
+
+function release_inspection() {
+  local index
+  for (( index = ${#inspect_mounts[@]} - 1; index >= 0; index-- )); do
+    sudo umount "${inspect_mounts[index]}"
+  done
+  inspect_mounts=()
+  if [[ -d "${INSPECT_DIRECTORY}" ]] && ! mountpoint -q "${INSPECT_DIRECTORY}/boot" && ! mountpoint -q "${INSPECT_DIRECTORY}/system"; then
+    rm -rf "${INSPECT_DIRECTORY}"
+  fi
+  if [[ -n "${loop_created}" ]]; then
+    sudo losetup -d "${loop}"
+    loop_created=
+  fi
+}
+
+# active value of a key in a key=value file (config.txt, retroarch.cfg): last uncommented line, quotes removed
+function active_value() {
+  [[ -f "$1" ]] || return 0
+  sudo sed -n -E 's/^'"$2"' *= *"?([^"#]*)"?.*/\1/p' "$1" | tail -n 1 | sed 's/ *$//'
+}
+
+# one printed setting: name=value
+function print_setting() {
+  [[ -n "$2" ]] && echo "$1=$2"
+}
+
+# print the real settings of a mounted image, compared with the options recorded at generation
+function inspect_settings() {
+  local boot="$1" system="$2"
+  local config="${boot}/config.txt"
+  local retroarch="${system}/opt/retropie/configs/all/retroarch.cfg"
+  local autostart="${system}/opt/retropie/configs/all/${AUTOLAUNCH_SCRIPT_FILENAME}"
+  local autoconfig="${system}/opt/retropie/configs/all/retroarch/autoconfig"
+  local record="${boot}/${OPTIONS_RECORD_FILENAME}"
+  local value name differs=() notes=()
+
+  # --- real state ---
+  # overscan: none (disable_overscan=1), firmware default, or margins
+  local real_overscan real_border=""
+  value="$(active_value "${config}" disable_overscan)"
+  if [[ "${value}" == "1" ]]; then
+    real_overscan="none"
+  elif [[ "${value}" == "0" ]] && [[ -n "$(active_value "${config}" overscan_left)" && -n "$(active_value "${config}" overscan_right)" \
+          && -n "$(active_value "${config}" overscan_top)" && -n "$(active_value "${config}" overscan_bottom)" ]]; then
+    overscan_left="$(active_value "${config}" overscan_left)"
+    overscan_right="$(active_value "${config}" overscan_right)"
+    overscan_top="$(active_value "${config}" overscan_top)"
+    overscan_bottom="$(active_value "${config}" overscan_bottom)"
+    real_border="$(margins_as_border)"
+    real_overscan="border:${real_border}"
+  else
+    real_overscan="firmware"
+  fi
+
+  local real_rotate=""
+  value="$(active_value "${config}" display_rotate)"
+  case "${value}" in
+    ""|0) ;;
+    1) real_rotate=90 ;;
+    2) real_rotate=180 ;;
+    3) real_rotate=270 ;;
+    *) notes+=("display_rotate=${value} : rotation non gérée par --rotate") ;;
+  esac
+
+  local real_hdmi="" group mode
+  group="$(active_value "${config}" hdmi_group)"
+  mode="$(active_value "${config}" hdmi_mode)"
+  if [[ -n "${group}${mode}" ]]; then
+    for name in "${!HDMI_MODES[@]}"; do
+      [[ "${HDMI_MODES[${name}]}" == "${group} ${mode}" ]] && real_hdmi="${name}"
+    done
+    [[ -z "${real_hdmi}" ]] && notes+=("hdmi_group=${group} hdmi_mode=${mode} : mode HDMI non géré par --hdmi-mode")
+  fi
+
+  local real_tv=""
+  if [[ "$(active_value "${config}" enable_tvout)" == "1" ]]; then
+    case "$(active_value "${config}" sdtv_mode)" in
+      2) real_tv=pal ;;
+      ""|0) real_tv=ntsc ;;
+      *) notes+=("sdtv_mode=$(active_value "${config}" sdtv_mode) : norme composite non gérée par --tv-out") ;;
+    esac
+  fi
+  [[ "${real_overscan}" == "firmware" && -z "${real_tv}" ]] && notes+=("overscan par défaut du firmware sans sortie composite")
+
+  local real_audio=""
+  if [[ -f "${system}/etc/asound.conf" ]]; then
+    if [[ "$(sudo cat "${system}/etc/asound.conf")" == "${JACK_AUDIO_LINES}" ]]; then
+      real_audio=jack
+    else
+      notes+=("/etc/asound.conf personnalisé : sortie du son non gérée par --audio")
+    fi
+  fi
+
+  local real_scanlines="" shader
+  shader="$(active_value "${retroarch}" video_shader)"
+  if [[ -n "${shader}" && "$(active_value "${retroarch}" video_shader_enable)" == "true" ]]; then
+    case "$(basename -- "${shader}")" in
+      crt-pi.glslp) real_scanlines=horizontal ;;
+      crt-pi-vertical.glslp) real_scanlines=vertical ;;
+      *) notes+=("shader ${shader} non géré par --scanlines") ;;
+    esac
+  fi
+  local real_sharp=""
+  [[ "$(active_value "${retroarch}" video_smooth)" == "false" ]] && real_sharp=ON
+
+  local controllers=() file
+  for file in "${autoconfig}"/*.cfg; do
+    [[ -f "${file}" ]] && controllers+=("$(basename -- "${file}")")
+  done
+
+  # --- game, as installed ---
+  if [[ -f "${autostart}" ]] && grep -q "launch-game.py" "${autostart}"; then
+    print_setting generic ON
+  elif [[ -f "${autostart}" ]]; then
+    print_setting specific "$(sed -n 's/^ *gamename="\(.*\)" *#.*/\1/p' "${autostart}" | head -n 1)"
+    print_setting system "$(sed -n 's/^ *corename="\(.*\)" *#.*/\1/p' "${autostart}" | head -n 1)"
+    print_setting emulator "$(sed -n 's/^ *emulatorname="\(.*\)" *#.*/\1/p' "${autostart}" | head -n 1)"
+  fi
+  print_setting installed_controllers "$(IFS='|'; echo "${controllers[*]}")"
+
+  # --- comparison with the recorded options ---
+  local rec_shrink="" rec_borders="" rec_tv="" rec_rotate="" rec_hdmi="" rec_audio="" rec_scanlines="" rec_sharp="" rec_controller=""
+  if [[ -f "${record}" ]]; then
+    print_setting record yes
+    rec_shrink="$(sed -n 's/^reduce=//p' "${record}" | tail -n 1)"
+    rec_borders="$(sed -n 's/^border=//p' "${record}" | tail -n 1)"
+    rec_tv="$(sed -n 's/^tv-out=//p' "${record}" | tail -n 1)"
+    rec_rotate="$(sed -n 's/^rotate=//p' "${record}" | tail -n 1)"
+    rec_hdmi="$(sed -n 's/^hdmi-mode=//p' "${record}" | tail -n 1)"
+    rec_audio="$(sed -n 's/^audio=//p' "${record}" | tail -n 1)"
+    rec_scanlines="$(sed -n 's/^scanlines=//p' "${record}" | tail -n 1)"
+    rec_sharp="$(sed -n 's/^no-smoothing=//p' "${record}" | tail -n 1)"
+    rec_controller="$(sed -n 's/^controller=//p' "${record}" | tail -n 1)"
+
+    # overscan expected from the recorded options
+    local rec_overscan
+    if [[ -n "${rec_shrink}" ]] && reduce_margins "${rec_shrink}"; then
+      rec_overscan="border:$(margins_as_border)"
+    elif [[ -n "${rec_borders}" ]] && border_margins "${rec_borders}"; then
+      rec_overscan="border:$(margins_as_border)"
+    elif [[ -n "${rec_tv}" ]]; then
+      rec_overscan="firmware"
+    else
+      rec_overscan="none"
+    fi
+    [[ "${rec_overscan}" != "${real_overscan}" ]] && differs+=(overscan)
+    [[ "${rec_rotate}" != "${real_rotate}" ]] && differs+=(rotate)
+    [[ "${rec_hdmi}" != "${real_hdmi}" ]] && differs+=(hdmi-mode)
+    [[ "${rec_tv}" != "${real_tv}" ]] && differs+=(tv-out)
+    [[ "${rec_audio}" != "${real_audio}" ]] && differs+=(audio)
+    [[ "${rec_scanlines}" != "${real_scanlines}" ]] && differs+=(scanlines)
+    # scanlines imply sharp pixels
+    local rec_sharp_effect=""
+    [[ -n "${rec_sharp}${rec_scanlines}" ]] && rec_sharp_effect=ON
+    [[ "${rec_sharp_effect}" != "${real_sharp}" ]] && differs+=(no-smoothing)
+    if [[ -n "${rec_controller}" && " ${controllers[*]} " != *" ${rec_controller} "* ]]; then
+      differs+=(controller)
+    fi
+  else
+    print_setting record no
+  fi
+
+  # --- settings: the recorded form when the image matches it, the real state otherwise ---
+  if [[ -f "${record}" && " ${differs[*]} " != *" overscan "* ]]; then
+    print_setting reduce "${rec_shrink}"
+    print_setting border "${rec_borders}"
+  else
+    print_setting border "${real_border}"
+  fi
+  print_setting scanlines "${real_scanlines}"
+  if [[ -f "${record}" && " ${differs[*]} " != *" no-smoothing "* ]]; then
+    print_setting no-smoothing "${rec_sharp}"
+  elif [[ -z "${real_scanlines}" ]]; then
+    print_setting no-smoothing "${real_sharp}"
+  fi
+  print_setting hdmi-mode "${real_hdmi}"
+  print_setting tv-out "${real_tv}"
+  print_setting rotate "${real_rotate}"
+  print_setting audio "${real_audio}"
+  if [[ -n "${rec_controller}" && " ${differs[*]} " != *" controller "* ]]; then
+    print_setting controller "${rec_controller}"
+  elif (( ${#controllers[@]} == 1 )); then
+    print_setting controller "${controllers[0]}"
+  fi
+  print_setting differs "$(IFS=','; echo "${differs[*]}")"
+  for value in "${notes[@]}"; do
+    print_setting note "${value}"
+  done
+}
+
+# print the settings of an image file or an SD card, read-only
+function inspect_SD() {
+  local target="$1" device partitions
+  trace "##########################"
+  trace "inspect_SD ###############"
+
+  trap release_inspection EXIT
+  trap 'exit 1' INT TERM
+  if [[ -b "${target}" ]]; then
+    check_sd_card "${target}"
+    device="${target}"
+  elif [[ -n "$(losetup -j "${target}")" ]]; then
+    # already associated (opened by the desktop or the editor): read through that device
+    device="$(losetup -j "${target}" | head -n 1 | cut -d: -f1)"
+  else
+    loop="$(sudo losetup -r -f --show -P "${target}")"
+    [[ -n "${loop}" ]] || exitonerror "Impossible d'associer l'image ${target} à un pseudo périphérique"
+    loop_created="ON"
+    device="${loop}"
+  fi
+
+  mapfile -t partitions < <(list_partitions "${device}")
+  if (( ${#partitions[@]} < 2 )); then
+    exitonerror "${target} n'a pas les deux partitions d'une image RetroPie (démarrage et système)"
+  fi
+  mount_for_inspection "${partitions[0]}" boot
+  local boot="${inspect_mountpoint}"
+  mount_for_inspection "${partitions[1]}" system
+  local system="${inspect_mountpoint}"
+  inspect_settings "${boot}" "${system}"
+}
+
 # Parameters Management #################################################
 
 # escape a string for JSON
@@ -1212,6 +1499,11 @@ get_options "${translated_options[@]}"
 install_prerequisites
 
 check_parameters
+
+if ! [[ -z "${inspect_target}" ]]; then
+  inspect_SD "${inspect_target}"
+  exit 0
+fi
 
 if ! [[ -z "${modify_target}" ]]; then
   if [[ -b "${modify_target}" ]]; then

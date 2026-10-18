@@ -463,6 +463,7 @@ class ModificationPage(QWidget):
         self.modes = core.hdmi_modes()
         self.cards = []
         self.target = None
+        self.record = {}
         self.installed_controller = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 22, 28, 12)
@@ -516,6 +517,7 @@ class ModificationPage(QWidget):
         frame_layout.addLayout(row)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
+        self.summary.setContentsMargins(10, 8, 10, 8)
         self.summary.setTextFormat(Qt.RichText)
         self.summary.hide()
         frame_layout.addWidget(self.summary)
@@ -570,7 +572,11 @@ class ModificationPage(QWidget):
         self.summary.setText(text)
         self.summary.show()
 
+    def settings_categories(self):
+        return [category["name"] for category in self.description["categories"] if category["settings"]]
+
     def read_settings(self):
+        """Quick reading of the boot partition (no password), then the real state with --inspect (sudo)."""
         if not self.target:
             return
         try:
@@ -580,33 +586,79 @@ class ModificationPage(QWidget):
             return
         self.form.clear()
         self.installed_controller = None
-        settings_categories = [category["name"] for category in self.description["categories"] if category["settings"]]
+        self.record = {}
         options = {option["long"]: option for option in self.description["options"]}
         if core.RECORD_NAME in files:
-            record = core.parse_record(files[core.RECORD_NAME])
-            self.installed_controller = record.get("controller")
-            settings = {name: value for name, value in record.items()
-                        if name in options and options[name]["category"] in settings_categories and name != "controller"}
-            self.form.set_values(settings)
-            game = f"<b>{record['specific']}</b>" if record.get("specific") else "<b>image générique</b>"
-            lines = [f"Jeu : {game}" + (f" — émulateur {record['emulator']}" if record.get("emulator") else "")]
-            lines.append(f"Manette installée : {record.get('controller', 'aucune')}")
-            dates = f"Générée le {record.get('generated', '?')}"
-            if record.get("modified"):
-                dates += f", modifiée le {record['modified']}"
-            lines.append(dates + f" (générateur {record.get('generator_version', '?')})")
-            self.show_summary("<br>".join(lines))
+            self.record = core.parse_record(files[core.RECORD_NAME])
+            self.installed_controller = self.record.get("controller")
+            self.form.set_values({name: value for name, value in self.record.items()
+                                  if name in options and options[name]["category"] in self.settings_categories()
+                                  and name != "controller"})
+            message = "Réglages de /boot/mo5-options.conf. Lecture de l'état réel de l'image…"
         elif "config.txt" in files:
             self.form.set_values(core.settings_from_config_txt(files["config.txt"], self.modes))
-            self.show_summary(f"Pas de /boot/{core.RECORD_NAME} : image générée avant son introduction. Seuls les "
-                              "réglages de config.txt ont été relus ; le son, les scanlines et le lissage sont à vérifier.",
-                              warning=True)
+            message = "Réglages de config.txt seulement. Lecture de l'état réel de l'image…"
         else:
             self.show_summary("Ni mo5-options.conf ni config.txt : ce n'est pas une image RetroPie ?", warning=True)
+            return
+        self.show_summary(message)
+        self.update_controller_placeholder()
+        self.main_window.inspect(self.target, self.inspected)
+
+    def update_controller_placeholder(self):
         controller = self.form.fields.get("controller")
         if controller:
             controller.set_placeholder(f"Garder {self.installed_controller}" if self.installed_controller
                                        else "Aucune manette installée")
+
+    def inspected(self, output):
+        """Real state printed by --inspect, or None if it could not be read."""
+        if output is None:
+            self.show_summary("État réel non lu (mot de passe non donné, ou erreur : voir le journal). Les réglages "
+                              "affichés viennent de la partition de démarrage seulement : le son, les scanlines, le "
+                              "lissage et la manette peuvent être faux.", warning=True)
+            return
+        values, notes = core.parse_inspection(output)
+        options = {option["long"]: option for option in self.description["options"]}
+        self.form.clear()
+        self.form.set_values({name: value for name, value in values.items()
+                              if name in options and options[name]["category"] in self.settings_categories()
+                              and name != "controller"})
+        installed = [name for name in values.get("installed_controllers", "").split("|") if name]
+        self.installed_controller = values.get("controller") or ", ".join(installed) or None
+        self.update_controller_placeholder()
+
+        titles = {option["long"]: option["title"].lower() for option in self.description["options"]}
+        titles["overscan"] = "réduction ou bordures"
+        if values.get("generic"):
+            lines = ["Jeu : <b>image générique</b> (jeu sur clé USB)"]
+        else:
+            game = f"<b>{values.get('specific', '?')}</b>"
+            details = [f"système {values['system']}"] if values.get("system") else []
+            if values.get("emulator"):
+                details.append(f"émulateur {values['emulator']}")
+            lines = [f"Jeu : {game}" + (f" ({', '.join(details)})" if details else "")]
+        lines.append("Manettes installées : " + (", ".join(installed) if installed else "aucune"))
+        warning = False
+        if values.get("record") == "yes":
+            dates = f"générée le {self.record.get('generated', '?')}"
+            if self.record.get("modified"):
+                dates += f", modifiée le {self.record['modified']}"
+            differs = [titles.get(name, name) for name in values.get("differs", "").split(",") if name]
+            if differs:
+                warning = True
+                lines.append(f"<b>Écarts avec mo5-options.conf</b> ({dates}) : {', '.join(differs)}. Modifiée à la main ? "
+                             "L'état réel est affiché.")
+            else:
+                lines.append(f"État réel conforme à mo5-options.conf ({dates}, générateur "
+                             f"{self.record.get('generator_version', '?')}).")
+        else:
+            lines.append("État réel de l'image. Pas de mo5-options.conf : image générée avant son introduction, "
+                         "une réduction en pourcentage est affichée en bordures.")
+        for note in notes:
+            warning = True
+            lines.append(f"À vérifier : {note}")
+        self.show_summary("<br>".join(lines), warning=warning)
 
     def apply(self):
         if not self.target:
@@ -737,6 +789,40 @@ class MainWindow(QMainWindow):
             else:
                 prompt = "Mot de passe incorrect. Mot de passe sudo :"
         return self.password
+
+    def inspect(self, target, done):
+        """Read the real settings of an image or card with --inspect; done(output or None)."""
+        if self.process is not None:
+            done(None)
+            return
+        password = self.ask_password()
+        if password is None:
+            done(None)
+            return
+        program, program_arguments = core.sudo_command(["--inspect", target])
+        process = QProcess(self)
+        process.setWorkingDirectory(core.TARGET_DIRECTORY)
+        output = []
+        process.readyReadStandardOutput.connect(
+            lambda: output.append(bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")))
+        process.readyReadStandardError.connect(
+            lambda: self.append_log(bytes(process.readAllStandardError()).decode("utf-8", errors="replace")))
+
+        def finished(code, _status):
+            self.process = None
+            self.progress.hide()
+            self.statusBar().showMessage("Réglages lus." if code == 0 else "Lecture de l'état réel impossible : voir le journal.")
+            done("".join(output) if code == 0 else None)
+
+        process.finished.connect(finished)
+        self.process = process
+        self.log.clear()
+        self.append_log(f"$ generate-generic-image.sh --inspect {shlex.quote(target)}\n")
+        self.progress.show()
+        self.statusBar().showMessage("Lecture de l'état réel…")
+        process.start(program, program_arguments)
+        process.write((password + "\n").encode())
+        process.closeWriteChannel()
 
     def run(self, arguments, label, after=None):
         if self.process is not None:

@@ -211,6 +211,20 @@ def parse_record(text):
     return values
 
 
+def parse_inspection(text):
+    """name=value lines printed by --inspect: (values, notes); note lines may repeat."""
+    values, notes = {}, []
+    for line in text.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key == "note":
+            notes.append(value)
+        else:
+            values[key] = value
+    return values, notes
+
+
 def settings_from_config_txt(text, modes):
     """Display settings guessed from config.txt, for images generated before mo5-options.conf."""
     active = {}

@@ -111,11 +111,12 @@ Chaque option a une forme courte et une forme longue, au choix : `-s <rom>`, `--
 | `-R 90\|180\|270`<br>`--rotate 90\|180\|270` | Rotation de tout l'affichage, dans le sens horaire. |
 | `-a jack\|hdmi`<br>`--audio jack\|hdmi` | Sortie du son. `jack` envoie le son sur la prise jack. `hdmi` garde la sortie par défaut de l'image (HDMI) : c'est le comportement sans `-a`. |
 | `-M <image ou carte>`<br>`--modify <image ou carte>` | Modifie les réglages de manette, d'affichage et de son d'une image générée (`.img`) ou d'une carte SD (`/dev/sdX`). Voir [§1.10](#110-modifier-une-image-générée-ou-une-carte-sd---modify). |
+| `-I <image ou carte>`<br>`--inspect <image ou carte>` | Lit l'état réel d'une image générée ou d'une carte SD, en lecture seule, et affiche ses réglages au format `nom=valeur`. Voir [§1.10](#110-modifier-une-image-générée-ou-une-carte-sd---modify). |
 | `-B`<br>`--batch` | Sans pause : le script ne demande pas de vérifier l'image avant le démontage, et s'arrête sans attendre sur un système inconnu. Utilisé par l'éditeur de configuration. |
 | `-d`<br>`--describe` | Décrit toutes les options au format JSON (noms, type, valeurs possibles, catégorie, incompatibilités) et s'arrête. L'éditeur de configuration construit son formulaire à partir de cette description. |
 | `-h`<br>`--help` | Affiche la syntaxe d'appel et s'arrête. |
 
-Il faut choisir exactement un mode : `-g`, `-s` ou `-M`. `-e` et `-S` ne servent qu'en mode spécifique. `-i` et `-o` sont obligatoires pour une génération. Une valeur inconnue, ou une combinaison interdite (`-r` avec `-b`, `-t` avec `-m`), arrête le script avant toute modification.
+Il faut choisir exactement un mode : `-g`, `-s`, `-M` ou `-I`. `-e` et `-S` ne servent qu'en mode spécifique. `-i` et `-o` sont obligatoires pour une génération. Une valeur inconnue, ou une combinaison interdite (`-r` avec `-b`, `-t` avec `-m`), arrête le script avant toute modification.
 
 Modes HDMI de `-m`. Le firmware connaît deux familles de modes : **moniteur** (norme VESA DMT, *Display Monitor Timings*, `hdmi_group=2`) et **téléviseur** (norme CEA-861, *Consumer Electronics Association*, `hdmi_group=1`). Le numéro `hdmi_mode` dépend de la famille. Source : documentation Raspberry Pi, *legacy config.txt options*.
 
@@ -248,6 +249,21 @@ source/generate-image/generate-generic-image.sh --modify /dev/sdb --rotate 270 -
 
 Une image générée avant l'enregistrement des options n'a pas de `/boot/mo5-options.conf`. `--modify` fonctionne quand même, avec un avertissement.
 
+**Lire les réglages (`--inspect`)**
+
+```
+source/generate-image/generate-generic-image.sh --inspect /dev/mmcblk0
+```
+
+`--inspect` relit l'**état réel** de l'image ou de la carte, sur ses deux partitions, en lecture seule. Il lit `config.txt` (overscan, rotation, mode HDMI, sortie composite), `/etc/asound.conf` (son), `retroarch.cfg` (scanlines, lissage), les manettes installées et le lanceur (jeu, système, émulateur). Une image est associée à un périphérique loop en lecture seule. Une partition déjà montée par le bureau est lue sur place, sans être démontée. Le mot de passe `sudo` est demandé.
+
+Il compare ensuite cet état aux options enregistrées dans `/boot/mo5-options.conf`, en recalculant leur effet avec le même code que la génération :
+- **Conforme :** les réglages sont affichés sous leur forme d'origine, par exemple `reduce=5:1024x768:bottom`.
+- **Écart** (modification à la main en SSH, par exemple) : l'état réel est affiché, en bordures en pixels pour l'overscan, et la ligne `differs=` liste les réglages concernés.
+- **Pas de `mo5-options.conf` :** l'état réel est affiché. Une réduction en pourcentage apparaît en bordures (`border=left=51,right=51,top=38,bottom=38`).
+
+Les lignes `note=` signalent un réglage que les options ne savent pas produire (`asound.conf` personnalisé, autre shader, mode HDMI non géré…). Les informations s'affichent sur la sortie standard, et les traces sur la sortie d'erreur.
+
 ### 1.11 Éditeur de configuration (interface graphique)
 
 ```
@@ -269,7 +285,7 @@ L'éditeur est une interface du script de génération : il lui demande la liste
 
 **Page « Modifier une image ou une carte SD »**
 - Choisir une image (**Parcourir…**) ou une carte SD insérée (liste des disques amovibles ou USB qui contiennent une carte, sans le disque du système).
-- Les réglages de `/boot/mo5-options.conf` sont lus aussitôt, avec un résumé : jeu, émulateur, manette installée, dates et version du générateur. Une image est lue directement, sans montage ni mot de passe. Une carte est lue là où le bureau l'a montée, ou montée sans mot de passe avec `udisksctl`. Pour une image générée avant `mo5-options.conf`, seuls les réglages de `config.txt` sont relus, et un avertissement le signale.
+- Les réglages sont lus en deux temps. D'abord, sans mot de passe, ceux de la partition de démarrage (`mo5-options.conf`, ou `config.txt` pour une image plus ancienne). Ensuite, après le mot de passe `sudo`, l'**état réel** de toute l'image avec `--inspect` : son, scanlines, lissage, manettes installées, jeu. Un encadré résume le jeu, les manettes installées et la conformité avec `mo5-options.conf`. Il s'affiche en orange quand l'image a été modifiée à la main depuis la génération, ou quand un réglage est à vérifier. Si le mot de passe n'est pas donné, seule la première lecture est affichée, avec un avertissement.
 - **Appliquer les réglages** lance `--modify` avec **tous** les réglages affichés : « Par défaut » ou un champ vide remet la valeur par défaut. Le champ Manette indique la manette installée ; il ne la remplace que si un nouveau fichier `.cfg` est choisi. Les réglages sont relus après la modification.
 
 Le mot de passe `sudo` est demandé une fois, vérifié, puis gardé en mémoire jusqu'à la fermeture de l'éditeur. Il n'est pas demandé si `sudo` n'en a pas besoin.
