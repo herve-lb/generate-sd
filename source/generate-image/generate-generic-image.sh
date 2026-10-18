@@ -36,6 +36,7 @@ TEMP_IMAGE="${REAL_HOME}/out.img"
 # and --describe (read by the configuration editor).
 # short|long|variable|type|values|label|category|description
 #   type: flag (no value), file, dir, path, text, choice (one of the values)
+#   values: the possible values of a choice, or the allowed extensions of a file
 #   category: mode, image, game, controller, display, sound, run
 #   controller, display and sound options can also be changed on a generated image or SD card (--modify)
 
@@ -47,7 +48,7 @@ OPTIONS=(
   "o|output|result_image|path||image|image|image à générer (remplacée si elle existe)"
   "e|emulator|emulatorname|text||émulateur|game|émulateur forcé, par exemple lr-mame2003. Sans cette option, l'émulateur par défaut du système"
   "S|samples|samples_dir|dir||répertoire|game|samples à installer à côté du jeu"
-  "c|controller|controller_file|file||fichier.cfg|controller|configuration de manette RetroArch à installer"
+  "c|controller|controller_file|file|cfg|fichier.cfg|controller|configuration de manette RetroArch (.cfg) à installer"
   "l|scanlines|scanlines|choice|horizontal vertical||display|effet scanlines : horizontal pour un jeu horizontal, vertical pour un jeu vertical"
   "n|no-smoothing|nosmooth|flag|||display|pas de lissage de l'image : pixels nets"
   "r|reduce|shrink|text||pourcentage:largeurxhauteur[:alignement]|display|réduit l'affichage de ce pourcentage pour un écran de cette résolution, par exemple 5:1024x768:bottom. Alignement : top, bottom, left, right, top-left, top-right, bottom-left, bottom-right"
@@ -178,7 +179,7 @@ function install_prerequisites() {
 }
 
 function check_parameters() {
-  local spec pair first second value
+  local spec pair first second value message
 
   # exactly one of generic, specific or modify
   if [[ -z "${generic}${gamefile}${modify_target}" ]]; then
@@ -195,13 +196,21 @@ function check_parameters() {
     fi
   done
 
-  # choice options: the value must be one of the listed values
+  # choice options: the value must be one of the listed values; file options: one of the listed extensions
   for spec in "${OPTIONS[@]}"; do
     read_option "${spec}"
     value="${!opt_var}"
+    # the message is built before usage, which reads the option table again
+    message=""
     if [[ "${opt_type}" == "choice" && -n "${value}" && " ${opt_values} " != *" ${value} "* ]]; then
+      message="Option -${opt_short} (--${opt_long}) inconnue : ${value} (valeurs possibles : ${opt_values// /, })"
+    fi
+    if [[ "${opt_type}" == "file" && -n "${value}" && -n "${opt_values}" && " ${opt_values} " != *" ${value##*.} "* ]]; then
+      message="Option -${opt_short} (--${opt_long}) : ${value} n'est pas un fichier ${opt_values// /, }"
+    fi
+    if [[ -n "${message}" ]]; then
       usage
-      exitonerror "Option -${opt_short} (--${opt_long}) inconnue : ${value} (valeurs possibles : ${opt_values// /, })"
+      exitonerror "${message}"
     fi
   done
 
@@ -210,8 +219,9 @@ function check_parameters() {
     for spec in "${OPTIONS[@]}"; do
       read_option "${spec}"
       if [[ -n "${!opt_var}" && " mode run ${SETTINGS_CATEGORIES} " != *" ${opt_category} "* ]]; then
+        message="L'option -${opt_short} (--${opt_long}) ne sert qu'à la génération, pas avec $(option_names --modify)"
         usage
-        exitonerror "L'option -${opt_short} (--${opt_long}) ne sert qu'à la génération, pas avec $(option_names --modify)"
+        exitonerror "${message}"
       fi
     done
     if ! [[ -f "${modify_target}" || -b "${modify_target}" ]]; then
@@ -418,7 +428,7 @@ function prepare_result() {
   # copy the result to the given destination, owned by the user even when run through sudo
   trace "Copie de ${TEMP_IMAGE} vers ${result_image}"
   cp "${TEMP_IMAGE}" "${result_image}"
-  chown "${REAL_USER}:" "${TEMP_IMAGE}" "${result_image}" 2> /dev/null
+  chown "${REAL_USER}:$(id -gn "${REAL_USER}")" "${TEMP_IMAGE}" "${result_image}" 2> /dev/null
 }
 
 # partitions of a disk, image loop device or SD card, in order: boot (FAT) then system (ext4)

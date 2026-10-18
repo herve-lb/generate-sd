@@ -311,7 +311,10 @@ class OptionsForm(ttk.Frame):
         elif option["type"] == "path":
             path = filedialog.asksaveasfilename(initialdir=initial, title=f"--{option['long']}")
         else:
-            path = filedialog.askopenfilename(initialdir=initial, title=f"--{option['long']}")
+            # file options may list their allowed extensions
+            filetypes = [(f"*.{extension}", f"*.{extension}") for extension in option["values"]]
+            path = filedialog.askopenfilename(initialdir=initial, title=f"--{option['long']}",
+                                              filetypes=filetypes + [("Tous les fichiers", "*")])
         if path:
             variable.set(path)
 
