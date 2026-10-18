@@ -33,23 +33,27 @@ generic=
 loop=
 
 original_retropie_image=
-game_image=
 result_image="out.img"
 samples_dir=
 controller_file=
+gamefile=
 emulatorname=
 specific_console=
 scanlines=
 nosmooth=
 shader_file=
 shrink=
+overscan_left=
+overscan_right=
+overscan_top=
+overscan_bottom=
 
 # OS pre-requisite #######################################################
 
-function install_prerequesites() {
+function install_prerequisites() {
 
   # check losetup installation
-  if [[ -z $(which losetup) ]]; then
+  if ! command -v losetup > /dev/null; then
     exitonerror "logiciel losetup manquant. Impossible de charger l'image de Retropie"
   fi
 }
@@ -150,86 +154,32 @@ function init_log_file() {
     fi
 }
 
+function log_message() {
+  local message="[$(date -u)][$1] $2"
+
+  # display to console
+  if ! [[ -z "${debug}" ]]; then
+    echo "${message}"
+  fi
+
+  #init log file if needed
+  init_log_file
+
+  #add to log file
+  echo "${message}" >> "${logFileName}"
+}
+
 function trace() {
-  local tracemsg="[$(date -u)][DEBUG] $1"
-
-  # display to console
-  if ! [[ -z ${debug} ]]; then
-    echo "${tracemsg}"
-  fi
-
-  #init log file if needed
-  init_log_file
-
-  #add to log file
-  echo ${tracemsg} >> "${logFileName}"
+  log_message DEBUG "$1"
 }
-
-function info() {
-  local tracemsg="[$(date -u)][INFO] $1"
-
-  # display to console
-  if ! [[ -z ${debug} ]]; then
-    echo "${tracemsg}"
-  fi
-
-  #init log file if needed
-  init_log_file
-
-  #add to log file
-  echo ${tracemsg} >> "${logFileName}"
-}
-
 
 function warning() {
-  local warningmsg="[$(date -u)][WARN] $1"
-
-  # display to console
-  if ! [[ -z "$debug" ]]; then
-    echo "${warningmsg}"
-  fi
-
-  #init log file if needed
-  init_log_file
-
-  #add to log file
-  echo "${warningmsg}" >> "${logFileName}"
+  log_message WARN "$1"
 }
 
+# the image is freed by the EXIT trap set in mount_image
 function exitonerror() {
-  local errormsg="[$(date -u)][ERROR] $1"
-
-  # display to console
-  if ! [[ -z $debug ]]; then
-    echo "${errormsg}"
-  fi
-
-  #init log file if needed
-  init_log_file
-
-  #add to log file
-  echo "${errormsg}" >> "${logFileName}"
-
-  exit 1
-}
-
-function exitonerror_cleanneeded() {
-  local errormsg="[$(date -u)][ERROR] $1"
-
-  # display to console
-  if ! [[ -z "$debug" ]]; then
-    echo "${errormsg}"
-  fi
-
-  #init log file if needed
-  init_log_file
-
-  #add to log file
-  echo "${errormsg}" >> "${logFileName}"
-
-  # Free the images
-  umount_image
-
+  log_message ERROR "$1"
   exit 1
 }
 
@@ -250,19 +200,19 @@ function prepare_image() {
     exitonerror "Pas d'image de destination"
   fi
 
-  # Delete old result is any
+  # Delete old result if any
   if [[ -f "${result_image}" ]]; then
     trace "Suppression de l'ancienne image résultat ${result_image}"
     rm "${result_image}"
   fi
 
-  # Delete old result is any
+  # Delete old working image if any
   if [[ -f "${TEMP_IMAGE}" ]]; then
     trace "Suppression de l'ancienne image de travail ${TEMP_IMAGE}"
     rm "${TEMP_IMAGE}"
   fi
 
-  # temporary duplicate to local directory (usefull is executing the script inside a VM)
+  # temporary duplicate to local directory (useful if executing the script inside a VM)
   trace "Copie de ${original_retropie_image} vers ${TEMP_IMAGE}"
   cp "${original_retropie_image}" "${TEMP_IMAGE}"
 
@@ -272,7 +222,7 @@ function prepare_image() {
   fi
 
   # End successfully
-  trace "L'image de travail ${TEMP_IMAGE} a été corectement générée"
+  trace "L'image de travail ${TEMP_IMAGE} a été correctement générée"
 }
 
 function prepare_result() {
@@ -284,7 +234,7 @@ function prepare_result() {
      exitonerror "L'image de travail ${TEMP_IMAGE} n'existe pas"
   fi
 
-  # copy the result to the given destianation
+  # copy the result to the given destination
   trace "Copie de ${TEMP_IMAGE} vers ${result_image}"
   cp "${TEMP_IMAGE}" "${result_image}"
 }
@@ -308,19 +258,19 @@ function mount_image() {
   trace "Création du répertoire de travail ${WORKING_DIRECTORY}"
   mkdir "${WORKING_DIRECTORY}"
   if [ $? -ne 0 ]; then
-    exitonerror_cleanneeded "Impossible de créer le répertoire de travail sur le disque"
+    exitonerror "Impossible de créer le répertoire de travail sur le disque"
   fi
 
   # Mount the image and map on the working directory
   trace "Montage de ${loop}p2 sur ${WORKING_DIRECTORY}"
   sudo mount "${loop}p2" "${WORKING_DIRECTORY}"
   if [ $? -ne 0 ]; then
-    exitonerror_cleanneeded "Impossible de monter ${loop}p2 sur ${WORKING_DIRECTORY}"
+    exitonerror "Impossible de monter ${loop}p2 sur ${WORKING_DIRECTORY}"
   fi
   trace "Montage de ${loop}p1 sur ${WORKING_DIRECTORY}/boot"
   sudo mount "${loop}p1" "${WORKING_DIRECTORY}/boot"
   if [ $? -ne 0 ]; then
-    exitonerror_cleanneeded "Impossible de monter ${loop}p1 sur ${WORKING_DIRECTORY}/boot"
+    exitonerror "Impossible de monter ${loop}p1 sur ${WORKING_DIRECTORY}/boot"
   fi
 }
 
@@ -355,7 +305,30 @@ function umount_image() {
   loop=
 }
 
-# SD Creation Mangement #######################################################
+# SD Creation Management ######################################################
+
+# remove a setting (commented or not) from a file, then append the given line at the end
+function replace_setting() {
+  local filename="$1"
+  local key="$2"
+  local line="$3"
+
+  trace "set '${line}' in file ${filename}"
+  sudo sed -i -E '/^#* *'"${key}"' *=/d' "${filename}"
+  sudo sed -i '$a'"${line}" "${filename}"
+}
+
+# copy the boot-time launcher, owned like its directory (pi) instead of root
+function install_autolaunch_script() {
+  local filename="$(dirname "${BASH_SOURCE[0]}")/../launch-game/$1"
+  local autolaunch_user_group="$(stat -c "%U:%G" "${AUTOLAUNCH_DIRECTORY}")"
+
+  trace "## Autolaunch script"
+  trace "Copy autolaunch script from ${filename} to ${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
+  sudo cp "${filename}" "${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
+  trace "chown ${autolaunch_user_group} ${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
+  sudo chown "${autolaunch_user_group}" "${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
+}
 
 function apply_common_modifications_on_SD () {
   trace "####################################"
@@ -387,7 +360,7 @@ function apply_common_modifications_on_SD () {
     sudo sed -i '0,/#disable_overscan/ s//disable_overscan/' "${filename}"
   fi
 
-  #     Special config for borne arcade1Up with a slight zoom neede
+  #     Special config for borne arcade1Up with a slight zoom needed
   if [[ "${specific_console}" == "borne_arcade_1_up" ]]; then
     trace "replace 'disable_overscan=1' by 'disable_overscan=0' in file ${filename}"
     sudo sed -i '0,/'"disable_overscan=1"'/ s//'"disable_overscan=0"'/' "${filename}"
@@ -403,20 +376,15 @@ function apply_common_modifications_on_SD () {
 
   #     Shrink the whole display by a percentage (option -r), replacing the overscan of the cabinet profile
   if ! [[ -z "${shrink}" ]]; then
-    trace "## Shrink ${shrink} : remove existing overscan lines and add the computed ones in file ${filename}"
-    sudo sed -i -E '/^#* *(disable_overscan|overscan_(left|right|top|bottom|scale)) *=/d' "${filename}"
-    sudo sed -i '$adisable_overscan=0' "${filename}"
-    sudo sed -i '$aoverscan_left='"${overscan_left}" "${filename}"
-    sudo sed -i '$aoverscan_right='"${overscan_right}" "${filename}"
-    sudo sed -i '$aoverscan_top='"${overscan_top}" "${filename}"
-    sudo sed -i '$aoverscan_bottom='"${overscan_bottom}" "${filename}"
+    trace "## Shrink ${shrink}"
+    replace_setting "${filename}" disable_overscan "disable_overscan=0"
+    replace_setting "${filename}" overscan_left "overscan_left=${overscan_left}"
+    replace_setting "${filename}" overscan_right "overscan_right=${overscan_right}"
+    replace_setting "${filename}" overscan_top "overscan_top=${overscan_top}"
+    replace_setting "${filename}" overscan_bottom "overscan_bottom=${overscan_bottom}"
     # apply the overscan to the RetroArch layer too
-    sudo sed -i '$aoverscan_scale=1' "${filename}"
+    replace_setting "${filename}" overscan_scale "overscan_scale=1"
   fi
-
-  # Disable overscan_scale=1
-  #trace "comment overscan_scale=1"
-  #sudo sed -i '0,/overscan_scale/ s//#overscan_scale/' "${filename}"
 
   # Disable large rainbow screen on initial boot
   trace "add disable_splash=1"
@@ -468,20 +436,22 @@ function apply_common_modifications_on_SD () {
   trace "replace disable_joystick=0 by disable_joystick=1 in file ${filename}"
   sudo sed -i '/disable_joystick/ s/"0"/"1"/g' "${filename}"
 
-  # add "disable_splash=1"
+  # add "disable_menu=1"
   trace "replace disable_menu=0 by disable_menu=1 in file ${filename}"
   sudo sed -i '/disable_menu/ s/"0"/"1"/g' "${filename}"
+
+  #
+  # both retroarch.cfg files (RetroArch default and RetroPie): no on-screen messages
+  #
+  for filename in "${WORKING_DIRECTORY}/opt/retropie/emulators/retroarch/retroarch.cfg" "${WORKING_DIRECTORY}/opt/retropie/configs/all/retroarch.cfg"; do
+    trace "## Apply modifications to ${filename}"
+    replace_setting "${filename}" video_font_enable 'video_font_enable = "false"'
+  done
 
   #
   # retropie/opt/retropie/emulators/retroarch/retroarch.cfg
   #
   filename="${WORKING_DIRECTORY}/opt/retropie/emulators/retroarch/retroarch.cfg"
-  trace "## Apply modifications to ${filename}"
-
-  # uncomment and set to false "video_font_enable=false"
-  trace "uncomment video_font_enable and set to false in file ${filename}"
-  sudo sed -i '/video_font_enable/ s/#//g' "${filename}"
-  sudo sed -i '/video_font_enable/ s/true/false/g' "${filename}"
 
   #     Special config for borne pacman MO5 with a screen slightly shifted
   if [[ "${specific_console}" == "borne_pacman_mo5" ]]; then
@@ -508,39 +478,21 @@ function apply_common_modifications_on_SD () {
   # retropie/opt/retropie/configs/all/retroarch.cfg
   #
   filename="${WORKING_DIRECTORY}/opt/retropie/configs/all/retroarch.cfg"
-  trace "## Apply modifications to ${filename}"
 
-  # uncomment and set to false "video_font_enable=false"
-  trace "uncomment video_font_enable and set to false in file ${filename}"
-  sudo sed -i '/video_font_enable/ s/#//g' "${filename}"
-  sudo sed -i '/video_font_enable/ s/true/false/g' "${filename}"
-
-  # set to true "video_smooth = false"
-  trace "set video_smooth to true in file ${filename}"
-  sudo sed -i '/video_smooth/ s/false/true/g' "${filename}"
-
-  #     No smoothing for sharp pixels (option -n, or needed by scanlines)
+  #     No smoothing for sharp pixels (option -n, or needed by scanlines). Otherwise RetroArch default (smoothing) is kept
   if ! [[ -z "${nosmooth}" ]] || ! [[ -z "${shader_file}" ]]; then
-    # remove existing lines (commented or not) then add the new value
-    trace "set video_smooth to false in file ${filename}"
-    sudo sed -i '/^#* *video_smooth *=/d' "${filename}"
-    sudo sed -i '$avideo_smooth = "false"' "${filename}"
+    replace_setting "${filename}" video_smooth 'video_smooth = "false"'
   fi
 
   #     Scanlines with a crt-pi shader
   if ! [[ -z "${shader_file}" ]]; then
     trace "## Scanlines ${scanlines} with shader ${SHADERS_DIRECTORY}/${shader_file}"
     if ! [[ -f "${WORKING_DIRECTORY}${SHADERS_DIRECTORY}/${shader_file}" ]]; then
-      exitonerror_cleanneeded "Shader introuvable dans l'image : ${SHADERS_DIRECTORY}/${shader_file}"
+      exitonerror "Shader introuvable dans l'image : ${SHADERS_DIRECTORY}/${shader_file}"
     fi
 
-    # remove existing lines (commented or not) then add the new values
-    trace "set video_shader_enable to true in file ${filename}"
-    sudo sed -i '/^#* *video_shader_enable *=/d' "${filename}"
-    sudo sed -i '$avideo_shader_enable = "true"' "${filename}"
-    trace "set video_shader to ${SHADERS_DIRECTORY}/${shader_file} in file ${filename}"
-    sudo sed -i '/^#* *video_shader *=/d' "${filename}"
-    sudo sed -i '$avideo_shader = "'"${SHADERS_DIRECTORY}/${shader_file}"'"' "${filename}"
+    replace_setting "${filename}" video_shader_enable 'video_shader_enable = "true"'
+    replace_setting "${filename}" video_shader 'video_shader = "'"${SHADERS_DIRECTORY}/${shader_file}"'"'
   fi
 
   #
@@ -564,16 +516,8 @@ function apply_common_modifications_on_SD () {
   #
   filename="${WORKING_DIRECTORY}/etc/asound.conf"
 
-  #     Special config for borne arcade1Up with use of jack output instead of HDMI
-  if [[ "${specific_console}" == "borne_arcade_1_up" ]]; then
-    trace "add 'pcm.!default {type hw card 1}' in file ${filename}"
-    echo "pcm.!default {type hw card 1}" | sudo tee "${filename}"
-    trace "add 'ctl.!default {type hw card 1}' in file ${filename}"
-    echo "ctl.!default {type hw card 1}" | sudo tee --append "${filename}"
-  fi
-
-  #     Special config for borne Rene Pierre with use of jack output instead of HDMI
-  if [[ "${specific_console}" == "borne_rene_pierre" ]]; then
+  #     Special config for bornes arcade1Up and Rene Pierre with use of jack output instead of HDMI
+  if [[ "${specific_console}" == "borne_arcade_1_up" || "${specific_console}" == "borne_rene_pierre" ]]; then
     trace "add 'pcm.!default {type hw card 1}' in file ${filename}"
     echo "pcm.!default {type hw card 1}" | sudo tee "${filename}"
     trace "add 'ctl.!default {type hw card 1}' in file ${filename}"
@@ -649,17 +593,7 @@ function create_Generic_SD () {
   #
   apply_common_modifications_on_SD
 
-  #
-  # autolaunch.sh installation
-  #
-  filename="$(dirname ${BASH_SOURCE[0]})/../launch-game/${AUTOLAUNCH_SCRIPT_FILENAME_GenericLaunch}"
-  trace "## Autolaunch script"
-  trace "Copy autolaunch script from ${filename} to ${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
-  sudo cp "${filename}" "${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
-  # give the script the same owner as its directory (pi) instead of root
-  autolaunch_user_group="$(stat -c "%U:%G" ${AUTOLAUNCH_DIRECTORY})"
-  trace "chown ${autolaunch_user_group} ${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
-  sudo chown "${autolaunch_user_group}" "${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
+  install_autolaunch_script "${AUTOLAUNCH_SCRIPT_FILENAME_GenericLaunch}"
 }
 
 function create_Specific_SD () {
@@ -672,26 +606,16 @@ function create_Specific_SD () {
   apply_common_modifications_on_SD
 
   # get user & group of roms directory in mounting situation
-  user_group="$(stat -c "%U:%G" ${ROMS_DIRECTORY})"
+  local user_group="$(stat -c "%U:%G" "${ROMS_DIRECTORY}")"
 
-  #
-  # autolaunch.sh installation
-  #
-  filename="$(dirname ${BASH_SOURCE[0]})/../launch-game/${AUTOLAUNCH_SCRIPT_FILENAME_SpecificLaunch}"
-  trace "## Autolaunch script"
-  trace "Copy autolaunch script from ${filename} to ${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
-  sudo cp "${filename}" "${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
-  # give the script the same owner as its directory (pi) instead of root
-  autolaunch_user_group="$(stat -c "%U:%G" ${AUTOLAUNCH_DIRECTORY})"
-  trace "chown ${autolaunch_user_group} ${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
-  sudo chown "${autolaunch_user_group}" "${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
+  install_autolaunch_script "${AUTOLAUNCH_SCRIPT_FILENAME_SpecificLaunch}"
 
   #
   # game installation
   #
   trace "## Install game into Core directory"
-  gamename=$(basename -- "${gamefile}")
-  corename=$(basename -- $(dirname -- "${gamefile}"))
+  local gamename=$(basename -- "${gamefile}")
+  local corename=$(basename -- "$(dirname -- "${gamefile}")")
   trace "Game to install is ${gamename} in core ${corename}"
 
   # check if roms directory exists in the SD
@@ -702,22 +626,22 @@ function create_Specific_SD () {
     sudo chown "${user_group}" "${ROMS_DIRECTORY}/${corename}/${gamename}"
   else
     read -p "Le jeu est dans un répertoire core inconnu. Time to check " -n1 -s
-    exitonerror_cleanneeded "Le jeu est dans un répertoire core inconnu : ${corename}"
+    exitonerror "Le jeu est dans un répertoire core inconnu : ${corename}"
   fi
 
   # check the emulator so that runcommand never asks to choose one at boot
   filename="${WORKING_DIRECTORY}/opt/retropie/configs/${corename}/emulators.cfg"
   trace "check emulator in ${filename}"
   if ! [[ -f "${filename}" ]]; then
-    exitonerror_cleanneeded "Aucun émulateur installé pour ${corename} : ${filename} introuvable"
+    exitonerror "Aucun émulateur installé pour ${corename} : ${filename} introuvable"
   fi
   if ! [[ -z "${emulatorname}" ]]; then
     if ! grep -q "^${emulatorname} *=" "${filename}"; then
-      exitonerror_cleanneeded "L'émulateur ${emulatorname} n'est pas installé pour ${corename} (voir ${filename})"
+      exitonerror "L'émulateur ${emulatorname} n'est pas installé pour ${corename} (voir ${filename})"
     fi
   else
     if ! grep -q "^default *= *\"..*\"" "${filename}"; then
-      exitonerror_cleanneeded "Pas d'émulateur par défaut pour ${corename} : un choix serait demandé au démarrage. Utiliser l'option -e (voir ${filename})"
+      exitonerror "Pas d'émulateur par défaut pour ${corename} : un choix serait demandé au démarrage. Utiliser l'option -e (voir ${filename})"
     fi
     trace "default emulator : $(grep "^default *=" "${filename}")"
   fi
@@ -734,7 +658,7 @@ function create_Specific_SD () {
   # Controller file
   if [[ ! -z "${controller_file}" ]]; then
 
-    controller_filename=$(basename -- "${controller_file}")
+    local controller_filename=$(basename -- "${controller_file}")
     trace "Copy controller file ${controller_file} to ${JOYPAD_CONFIGURATION_DIRECTORY}/${controller_filename}"
     sudo cp "${controller_file}" "${JOYPAD_CONFIGURATION_DIRECTORY}/${controller_filename}"
     sudo chown "${user_group}" "${JOYPAD_CONFIGURATION_DIRECTORY}/${controller_filename}"
@@ -745,17 +669,18 @@ function create_Specific_SD () {
   #
   trace "## Put Core and Game name into the launcher file"
   filename="${AUTOLAUNCH_DIRECTORY}/${AUTOLAUNCH_SCRIPT_FILENAME}"
-  trace "replace CORE_NAME by ${corename} in file ${filename}"
-  sudo sed -i '0,/'"CORE_NAME"'/ s//'"${corename}"'/' "${filename}"
-  trace "replace GAME_NAME by ${gamename} in file ${filename}"
-  sudo sed -i '0,/'"GAME_NAME"'/ s//'"${gamename}"'/' "${filename}"
-  if ! [[ -z "${emulatorname}" ]]; then
-    trace "replace EMULATOR_NAME by ${emulatorname} in file ${filename}"
-    sudo sed -i '0,/'"EMULATOR_NAME"'/ s//'"${emulatorname}"'/' "${filename}"
-  else
-    trace "replace EMULATOR_NAME by "" in file ${filename}"
-    sudo sed -i '0,/'"EMULATOR_NAME"'/ s//''/' "${filename}"
-  fi
+  local placeholder value
+  for placeholder in CORE_NAME GAME_NAME EMULATOR_NAME; do
+    case "${placeholder}" in
+      CORE_NAME) value="${corename}" ;;
+      GAME_NAME) value="${gamename}" ;;
+      EMULATOR_NAME) value="${emulatorname}" ;;
+    esac
+    trace "replace ${placeholder} by '${value}' in file ${filename}"
+    # escape the characters that are special in a sed replacement (\ / &)
+    value=$(printf '%s' "${value}" | sed 's/[\\/&]/\\&/g')
+    sudo sed -i '0,/'"${placeholder}"'/ s//'"${value}"'/' "${filename}"
+  done
 }
 
 # Parameters Management #################################################
@@ -784,7 +709,7 @@ function get_options() {
       #Ouput image result
       o)
         result_image="${OPTARG}"
-	      trace "Le fichier de sortir est ${result_image}"
+	      trace "Le fichier de sortie est ${result_image}"
         ;;
 
       #Specific with filepath to game to install
@@ -859,26 +784,19 @@ function get_options() {
         ;;
     esac
   done
-
-  shift $((OPTIND-1))
-
-  # get arguments if any
-
 }
 
 # Main start here #######################################################
 
 get_options "$@"
 
-install_prerequesites
+install_prerequisites
 
 check_parameters
 
 prepare_image
 
 mount_image
-
-# read -p "Vérifier le résultat avant modification des fichiers de l'image... " -n1 -s
 
 if ! [[ -z ${generic} ]]; then
   create_Generic_SD

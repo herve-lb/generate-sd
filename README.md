@@ -279,22 +279,23 @@ Lignes ajoutées à la fin du fichier, dans cet ordre :
 
 | Changement | Condition |
 |---|---|
-| Ligne `video_font_enable` : tous les `#` sont retirés et `true` devient `false` (pas de messages à l'écran) | Toujours |
+| Les lignes `video_font_enable` existantes, commentées ou non, sont supprimées, puis `video_font_enable = "false"` est ajouté à la fin du fichier (pas de messages à l'écran) | Toujours |
 | Ligne `aspect_ratio_index` : `19` → `22` (ratio personnalisé « Custom ») | `-x borne_pacman_mo5` |
 | Ligne `custom_viewport_width` : décommentée, `0` → `"366"` | `-x borne_pacman_mo5` |
 | Ligne `custom_viewport_height` : décommentée, `0` → `"476"` | `-x borne_pacman_mo5` |
 | Ligne `custom_viewport_x` : décommentée, `0` → `"149"` | `-x borne_pacman_mo5` |
 | Ligne `custom_viewport_y` : décommentée, `0` → `"5"` | `-x borne_pacman_mo5` |
 
-Pour `borne_pacman_mo5`, l'image du jeu occupe donc une zone de 366×476 px, placée à x=149 et y=5. Cela compense l'écran légèrement décalé de la borne.
+Pour `borne_pacman_mo5`, l'intention est que l'image du jeu occupe une zone de 366×476 px, placée à x=149 et y=5, pour compenser l'écran légèrement décalé de la borne. **Mais sur l'image d'origine actuelle, ces remplacements n'ont aucun effet** : la ligne est `# aspect_ratio_index = 20` (et non `19`), et aucune ligne `custom_viewport_*` n'existe dans le fichier. RetroArch garde donc son affichage par défaut.
 
 #### `/opt/retropie/configs/all/retroarch.cfg` — configuration RetroArch commune
 
 | Changement | Condition |
 |---|---|
-| Ligne `video_font_enable` : tous les `#` sont retirés et `true` devient `false` | Toujours |
-| Ligne `video_smooth` : `false` → `true` (lissage bilinéaire de l'image) | Toujours **sauf** avec `-n` ou `-l` |
+| Les lignes `video_font_enable` existantes, commentées ou non, sont supprimées, puis `video_font_enable = "false"` est ajouté à la fin du fichier | Toujours |
 | Les lignes `video_smooth` existantes, commentées ou non, sont supprimées, puis `video_smooth = "false"` est ajouté à la fin du fichier (pixels nets) | `-n` ou `-l` |
+
+Sans `-n` ni `-l`, `video_smooth` n'est pas modifié : RetroArch garde son réglage par défaut, le lissage bilinéaire.
 | Les lignes `video_shader_enable` et `video_shader` existantes, commentées ou non, sont supprimées, puis ces lignes sont ajoutées à la fin du fichier :<br>`video_shader_enable = "true"`<br>`video_shader = "/opt/retropie/configs/all/retroarch/shaders/crt-pi.glslp"` | `-l scanlines_horizontal` |
 | Même chose avec `video_shader = "/opt/retropie/configs/all/retroarch/shaders/crt-pi-vertical.glslp"` | `-l scanlines_vertical` |
 
@@ -397,14 +398,13 @@ Pour qu'aucun choix d'émulateur ne puisse jamais apparaître, il est préférab
 Ces remarques viennent de la lecture du script. Elles ne changent pas son comportement, mais elles aident à comprendre le résultat.
 
 - **Profil `pacman_GameStoryVersailles` :** `disable_overscan` reste commenté, donc l'overscan par défaut du firmware s'applique. C'est voulu pour la sortie composite sur un téléviseur. Avec `-r`, cet overscan par défaut est remplacé par les marges calculées.
-- **Profil `borne_pacman_mo5` :** le script ne décommente pas la ligne `aspect_ratio_index`. Si elle est commentée dans l'image d'origine, le passage à `22` n'a pas d'effet et RetroArch garde son ratio par défaut.
-- **Viewport et `video_font_enable` :** ces réglages sont faits dans `/opt/retropie/emulators/retroarch/retroarch.cfg`, qui est le fichier par défaut de RetroArch. Ce n'est pas `/opt/retropie/configs/all/retroarch.cfg`, le fichier lu en priorité par RetroPie.
+- **Profil `borne_pacman_mo5` :** ses réglages RetroArch n'ont aucun effet sur l'image d'origine actuelle (voir [§3.1](#31-modifications-communes--g-et--s)). Le script ne décommente pas `aspect_ratio_index`, cherche la valeur `19` alors que la ligne vaut `20`, et les lignes `custom_viewport_*` n'existent pas.
+- **Viewport :** ce réglage est fait dans `/opt/retropie/emulators/retroarch/retroarch.cfg`, qui est le fichier par défaut de RetroArch. Ce n'est pas `/opt/retropie/configs/all/retroarch.cfg`, le fichier lu en priorité par RetroPie.
 - **Pas de fichier d'échange :** `dphys-swapfile` est désactivé. Sur un Pi 3 (1 Go), c'est sans conséquence pour ces jeux. Sur un Pi Zero 2 W (512 Mo), un émulateur gourmand en mémoire (par ex. `lr-mame2010`) pourrait manquer de mémoire. À tester sur la borne.
 - **Plus de partage Samba ni de `retropie.local` :** pour accéder à la borne, utilisez SSH avec son adresse IP.
-- **Remplacements larges :** les `sed` de type `s/#//g` et `s/0/.../g` portent sur **toute la ligne**. Une ligne qui contient plusieurs `#` ou plusieurs `0` est entièrement modifiée.
+- **Remplacements larges :** les `sed` du profil `borne_pacman_mo5` (`s/#//g`, `s/0/.../g`) portent sur **toute la ligne**. Une ligne qui contient plusieurs `#` ou plusieurs `0` est entièrement modifiée.
 - **Remplacements limités :** les remplacements de `cmdline.txt`, de l'overscan et des noms dans `autostart.sh` ne portent que sur la **première** occurrence trouvée dans le fichier (`sed '0,/motif/ s//.../'`). L'option `-r` fait exception : elle supprime toutes les lignes d'overscan avant d'ajouter les siennes.
 - **Scanlines et `video_smooth` :** avec `-l`, le lissage est désactivé, car il rendrait les lignes floues. Le choix du shader dépend de l'orientation du jeu d'origine, pas de celle de l'écran (voir [§1.8](#18-choisir-les-scanlines--l)).
-- **Scanlines et viewport :** avec `borne_pacman_mo5`, la zone de 366×476 px n'est pas un multiple entier de la résolution du jeu. Les lignes peuvent être irrégulières (moiré). À vérifier à l'écran.
 - **Scanlines et sortie composite :** `-l` est déconseillé avec `pacman_GameStoryVersailles`. Un téléviseur cathodique produit déjà ses propres scanlines.
 
 ---
@@ -438,7 +438,7 @@ L'utilisateur est `pi`. Le mot de passe par défaut de RetroPie est `raspberry`,
 |---|---|
 | `/opt/retropie/configs/all/retroarch.cfg` | Réglages RetroArch **communs à tous les systèmes** : lissage, shader, messages à l'écran… |
 | `/opt/retropie/configs/<système>/retroarch.cfg` | Réglages **propres à un système**. Ils ne sont pris en compte que s'ils sont placés **au-dessus** de la ligne `#include "/opt/retropie/configs/all/retroarch.cfg"` |
-| `/opt/retropie/emulators/retroarch/retroarch.cfg` | Configuration par défaut de RetroArch. Le profil `borne_pacman_mo5` y règle le viewport |
+| `/opt/retropie/emulators/retroarch/retroarch.cfg` | Configuration par défaut de RetroArch. Le profil `borne_pacman_mo5` est censé y régler le viewport (sans effet actuellement) |
 | `/opt/retropie/configs/all/retroarch-core-options.cfg` | Options des émulateurs (cores) : palette Game Boy, réglages MAME… |
 | `/opt/retropie/configs/all/retroarch/autoconfig/` | Configurations des manettes (`.cfg`). `/opt/retropie/configs/all/retroarch-joypads` est un lien vers ce répertoire |
 | `/opt/retropie/configs/all/retroarch/shaders/` | Shaders, dont `crt-pi.glslp` et `crt-pi-vertical.glslp` (option `-l`) |
