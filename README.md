@@ -248,6 +248,26 @@ source/generate-image/generate-generic-image.sh --modify /dev/sdb --rotate 270 -
 
 Une image générée avant l'enregistrement des options n'a pas de `/boot/mo5-options.conf`. `--modify` fonctionne quand même, avec un avertissement.
 
+### 1.11 Éditeur de configuration (interface graphique)
+
+```
+python3 source/config-editor/mo5-config-editor.py
+```
+
+Prérequis : un poste Ubuntu avec bureau, Python 3 et Tkinter (`sudo apt install python3-tk` s'il manque). L'éditeur est une interface du script de génération : il lui demande la liste de ses options (`--describe`) et construit ses formulaires à partir d'elle. Une nouvelle option du script apparaît donc dans l'éditeur sans le modifier, avec ses valeurs possibles en liste déroulante et sa description sous le champ.
+
+**Onglet « Générer une image »**
+- Un champ par option, rangé par catégorie (type d'image, images, jeu, manette, affichage, son).
+- **Charger un script…** remplit le formulaire à partir d'un script de `work/target/`. **Enregistrer comme script…** écrit un script autonome au même format, avec des chemins relatifs au répertoire du script.
+- **Générer l'image** lance le script avec `--batch`, sans pause. Les chemins relatifs sont pris par rapport à `work/target/`, comme dans les scripts. Le journal s'affiche en bas de la fenêtre. **Arrêter** interrompt la génération, et l'image est alors démontée proprement.
+
+**Onglet « Modifier une image ou une carte SD »**
+- Choisir une image (**Image…**) ou une carte SD insérée (liste des disques amovibles ou USB, sans le disque du système).
+- **Lire les réglages** affiche les réglages de `/boot/mo5-options.conf`, ainsi qu'un résumé : jeu, émulateur, manette installée et dates. Une image est lue directement, sans montage ni mot de passe. Une carte est lue là où le bureau l'a montée, ou montée sans mot de passe avec `udisksctl`. Pour une image générée avant `mo5-options.conf`, seuls les réglages de `config.txt` sont relus.
+- **Appliquer les réglages** lance `--modify` avec **tous** les réglages affichés : un champ vide revient à la valeur par défaut. Le champ Manette installe un nouveau fichier ; vide, la manette ne change pas.
+
+Le mot de passe `sudo` est demandé une fois, vérifié, puis gardé en mémoire jusqu'à la fermeture de l'éditeur. Il n'est pas demandé si `sudo` n'en a pas besoin.
+
 ## 2. Écrire l'image sur une carte SD
 
 Sous Linux, après avoir inséré une carte (formatée sous Windows ou macOS si besoin) :

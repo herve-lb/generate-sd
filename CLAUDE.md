@@ -55,6 +55,10 @@ This is a Python 3 program that runs on the Pi from the USB key's `bin/`. The ke
 
 `globals.py` switches paths depending on whether the hostname contains `retropie`. Off-Pi, it uses `/Volumes/ROMS/...-tests` dirs for testing on macOS. `USB_Key_Sample/bin/` is a copy of these files that has diverged from them, so check both if you change the launcher.
 
+## Configuration editor (`source/config-editor/mo5-config-editor.py`)
+
+Python 3 + Tkinter GUI (Ubuntu desktop), README §1.11. It hard-codes no generator option: forms are built from `generate-generic-image.sh --describe`. It loads/saves `work/target` scripts (shlex parsing of the generator call), runs generations and `--modify` through `sudo -S ... --batch` with cwd `work/target`, and reads `/boot/mo5-options.conf` (and `config.txt` as a fallback) from an image without mounting (its own FAT reader with long-name support) or from an SD card's boot partition (desktop mountpoint or `udisksctl mount`). Planned v3: discover a USB controller plugged into the PC and generate its RetroArch `.cfg`, replacing `source/controller-config/create-controller-cfg.py`.
+
 ## Other directories
 
 - `source/controller-config/create-controller-cfg.py` creates joypad `.cfg` files (see README §1.9).
