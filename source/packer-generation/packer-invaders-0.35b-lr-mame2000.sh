@@ -1,2 +1,0 @@
-echo "./generate-generic-image-with-packer.sh -a -d -i ../../work/origin/origin.img -o invaders.mame2000.img -s ../../work/origin/game-to-install/arcade/invaders.zip -p ../../work/origin/game-to-install/arcade/samples.space.invaders/ -e lr-mame2000"
-./generate-generic-image-with-packer.sh -i ../../work/origin/origin.img -o invaders.mame2000.img -s ../../work/origin/game-to-install/arcade/invaders.zip -p ../../work/origin/game-to-install/arcade/samples.space.invaders -e lr-mame2000

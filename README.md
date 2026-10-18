@@ -181,11 +181,6 @@ L'outil demande chaque commande dans l'ordre : directions, A, B, X, Y, L, R, L2,
 
 RetroArch choisit le fichier d'après `input_device`, pas d'après le nom du fichier. Si l'encodeur de la borne et vos manettes de test portent le même nom (par ex. « Mega World »), une même image ne peut être correcte que pour l'un des deux.
 
-### 1.10 Autres méthodes
-
-- `source/packer-generation/` contient une autre chaîne de génération, basée sur Packer (`packer-builder-arm-image`). `generate-generic-image-with-packer.sh` accepte les mêmes options. Voir le README de ce répertoire.
-- `source/generate-image/retropie.sh` et `generate-retropie-image(obsolete).sh` sont d'anciennes versions, remplacées par `generate-generic-image.sh`.
-
 ---
 
 ## 2. Écrire l'image sur une carte SD

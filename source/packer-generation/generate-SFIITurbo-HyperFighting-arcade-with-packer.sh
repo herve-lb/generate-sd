@@ -1,2 +1,0 @@
-echo "./generate-generic-image-with-packer.sh -i ../../work/origin/origin.img -o sf-ii-turbo-hyper-firghting-mame-specific.img -s ../../work/origin/game-to-install/arcade/sf2hf.zip -e lr-mame2000 -c '../../work/origin/game-to-install/arcade/Mega World.cfg' "
-./generate-generic-image-with-packer.sh -i ../../work/origin/origin.img -o sf-ii-turbo-hyper-firghting-mame-specific.img -s ../../work/origin/game-to-install/arcade/sf2hf.zip -e lr-mame2000 -c '../../work/origin/game-to-install/arcade/Mega World.cfg'    

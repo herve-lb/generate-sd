@@ -51,10 +51,8 @@ This is a Python 3 program that runs on the Pi from the USB key's `bin/`. The ke
 - `Console` locates the game, the controller and the BIOS, and has subclasses for systems that need a BIOS (`PCEngine`, `Playstation`).
 - `Controllers` copies joypad configs to the SD card and checks that the plugged controllers are configured.
 
-`globals.py` switches paths depending on whether the hostname contains `retropie`. Off-Pi, it uses `/Volumes/ROMS/...-tests` dirs for testing on macOS. `launch-game.sh` is an older, incomplete Bash version. `USB_Key_Sample/bin/` is a copy of these files that has diverged from them, so check both if you change the launcher.
+`globals.py` switches paths depending on whether the hostname contains `retropie`. Off-Pi, it uses `/Volumes/ROMS/...-tests` dirs for testing on macOS. `USB_Key_Sample/bin/` is a copy of these files that has diverged from them, so check both if you change the launcher.
 
 ## Other directories
 
-- `source/packer-generation/` is an alternative, Packer-based pipeline that uses `packer-builder-arm-image` and `mo5-retropie.json`. `generate-generic-image-with-packer.sh` takes the same options as the main script. Setup notes are in its README.md, which currently contains unresolved stash conflict markers.
-- `source/generate-image/retropie.sh` and `generate-retropie-image(obsolete).sh` are older predecessors of `generate-generic-image.sh`. The README's usage line still refers to the obsolete script.
-- `source/example.sh` is an unrelated third-party script for RetroPie launching images.
+- `source/controller-config/create-controller-cfg.py` creates joypad `.cfg` files (see README §1.9).
