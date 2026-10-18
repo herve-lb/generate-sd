@@ -87,7 +87,8 @@ source/generate-image/generate-generic-image.sh -d -i <image d'origine> -o <imag
 | `-l <scanlines>` | Effet scanlines par shader RetroArch : `scanlines_horizontal` (shader `crt-pi`) ou `scanlines_vertical` (shader `crt-pi-vertical`). Voir [§1.8](#18-choisir-les-scanlines--l) pour choisir. Une autre valeur arrête le script avant toute modification. |
 | `-n` | Désactive le lissage de l'image (`video_smooth`) : pixels nets. Utile pour les jeux en basse résolution très agrandis, comme la Game Boy. Implicite avec `-l`. |
 | `-r <pourcentage>:<largeur>x<hauteur>[:<alignement>]` | Réduit tout l'affichage (splash, EmulationStation, jeu) de ce pourcentage, avec une bordure noire autour, par overscan dans `config.txt`. La résolution est celle de l'écran de la borne, par exemple `-r 5:1024x768`. Elle sert à convertir le pourcentage en pixels : si l'écran a une autre résolution, la réduction réelle sera différente. L'image est centrée, sauf si un alignement la cale contre un bord ou dans un coin : `haut`, `bas`, `gauche`, `droite`, `haut-gauche`, `haut-droite`, `bas-gauche` ou `bas-droite`, par exemple `-r 5:1024x768:bas`. Le pourcentage peut être décimal (`2.5`) et doit être inférieur à 50. Remplace l'overscan d'un profil `-x`. Un format invalide arrête le script avant toute modification. |
-| `-d` | Mode debug (traces à l'écran). Aucun effet sur l'image. |
+| `-d` | Sans effet : les traces sont toujours affichées à l'écran et écrites dans le journal. L'option est conservée parce que les scripts de `work/target/` l'utilisent. |
+| `-h` | Affiche la syntaxe d'appel et s'arrête. |
 
 `-g` et `-s` s'excluent mutuellement, et l'un des deux est obligatoire. `-e`, `-c` et `-p` ne sont pris en compte qu'en mode spécifique.
 
@@ -97,7 +98,7 @@ source/generate-image/generate-generic-image.sh -d -i <image d'origine> -o <imag
 2. Cette copie est associée à un périphérique loop. La partition 2 est montée sur `work_temp/` dans le répertoire courant, la partition 1 sur `work_temp/boot`. Le mot de passe `sudo` est demandé.
 3. Les modifications décrites dans la [section 3](#3-modifications-appliquées-à-limage) sont appliquées.
 4. **Le script fait une pause** : « Les modifications ont été appliquées… ». Vous pouvez alors inspecter l'image montée dans `work_temp/`. Appuyez sur une touche pour continuer.
-5. Les partitions sont démontées, `work_temp/` est supprimé et le périphérique loop est libéré.
+5. Les partitions sont démontées, `work_temp/` est supprimé et le périphérique loop est libéré. Ce démontage a lieu aussi si le script s'arrête sur une erreur ou sur un Ctrl-C après le montage. `work_temp/` n'est jamais supprimé si un montage est encore actif.
 6. `$HOME/out.img` est copié vers le fichier passé à `-o`.
 
 Le script fait aussi une pause, puis s'arrête, si le système de la ROM est inconnu, c'est-à-dire si `roms/<système>` n'existe pas dans l'image. Le script est interactif et n'est pas prévu pour tourner sans surveillance.
@@ -106,7 +107,7 @@ Le journal est écrit dans `source/generate-image/generate-generic-image.log`.
 
 ### 1.6 Nettoyer après un arrêt brutal
 
-Si une génération s'interrompt, des montages ou un périphérique loop peuvent rester actifs. Pour les libérer :
+Le script démonte l'image lui-même s'il s'arrête sur une erreur ou sur un Ctrl-C. Mais si le démontage échoue (fichier ouvert dans `work_temp/`, par exemple) ou si le processus est tué (`kill -9`, coupure du terminal), des montages ou un périphérique loop peuvent rester actifs. Pour les libérer :
 
 ```
 cd work/target
@@ -365,7 +366,7 @@ Au démarrage, ce script :
 - lance `runcommand.sh 0 _SYS_ <système> <rom>` si `-e` n'a pas été donné. C'est l'émulateur par défaut du système qui est utilisé ;
 - avec `-e`, cherche la ligne de commande de l'émulateur dans `/opt/retropie/configs/<système>/emulators.cfg`, y remplace `%ROM%` par le chemin du jeu, puis l'exécute.
 
-Le script contient un contrôle des manettes connues (`retroarch-joypads`), mais il est **désactivé** : `check_Controllers=1` est forcé. EmulationStation n'est donc jamais lancé à la place du jeu.
+Le jeu est toujours lancé directement : EmulationStation n'est jamais démarré à la place du jeu, même si une manette n'est pas configurée.
 
 #### Jeu
 

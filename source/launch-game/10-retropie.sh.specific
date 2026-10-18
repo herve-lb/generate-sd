@@ -5,71 +5,35 @@ CONFIGDIR="$ROOTDIR/configs"
 
 source "$ROOTDIR/lib/inifuncs.sh"
 
-##########################################################################
-# check if system doesn't know the configuration of each connected controller
+corename="CORE_NAME" # will be fill at generation time
+gamename="GAME_NAME" # will be fill at generation time
+emulatorname="EMULATOR_NAME" # will be fill or emptied at generation time
 
-check_Controllers=1
+# If game file is found in SD Card, then launch it
+if [[ -f "/home/pi/RetroPie/roms/${corename}/${gamename}" ]]; then
 
-IFS=''
-while read -r LINE   # avoids the use of cut
-do
-  filename=$(echo ${LINE} | tee /dev/tty | grep -Po "(?<=input: )(.*)(?= as)")
-  filename="${filename}.cfg"
-  echo "joypad filename \"${filename}\""
-
-  # find file in /opt/retropie/configs/all/retroarch-joypads
-  echo "Checking /opt/retropie/configs/all/retroarch-joypads/${filename}..."
-  if [[ -f "/opt/retropie/configs/all/retroarch-joypads/"${filename} ]]; then
-    echo "Controller file found in /opt/retropie/configs/all/retroarch-joypads"
+  # if no emulator is provided then launch game by the generic command
+  if [[ -z ${emulatorname} ]]; then
+    echo "Launching /opt/retropie/supplementary/runcommand/runcommand.sh 0 _SYS_ ${corename} ${gamename}"
+    # when building image on Debian OS, game file must be root:root.
+    /opt/retropie/supplementary/runcommand/runcommand.sh 0 _SYS_ "${corename}" "/home/pi/RetroPie/roms/${corename}/${gamename}"
   else
-    # a controller is unknown, reset result
-    check_Controllers=0
-    break
-  fi
-
-done < <(dmesg | grep input:)
-
-echo "Result : ${check_Controllers}"
-
-# Bypass joypad control
-check_Controllers=1
-
-##########################################################################
-#   if one controller has an unkown configuration then launch Emulation Station for configuration
-
-if [[ ${check_Controllers} == 0 ]]; then
-  emulationstation
-else
-  corename="CORE_NAME" # will be fill at generation time
-  gamename="GAME_NAME" # will be fill at generation time
-  emulatorname="EMULATOR_NAME" # will be fill or emptied at generation time
-
-  # If game file is found in SD Card, then launch it
-  if [[ -f "/home/pi/RetroPie/roms/${corename}/${gamename}" ]]; then
-
-    # if no emulator is provided then launch game by the generic command
-    if [[ -z ${emulatorname} ]]; then
-      echo "Launching /opt/retropie/supplementary/runcommand/runcommand.sh 0 _SYS_ ${corename} ${gamename}"
-      # when building image on Debian OS, game file must be root:root.
-      /opt/retropie/supplementary/runcommand/runcommand.sh 0 _SYS_ "${corename}" "/home/pi/RetroPie/roms/${corename}/${gamename}"
+    # get the command line for the emulator inside the configuration file for this system
+    iniConfig " = " '"' "${CONFIGDIR}/${corename}/emulators.cfg"
+    iniGet "${emulatorname}"
+    if ! [[ -z "${ini_value}" ]]; then
+      # find command launch line, so configure it with game file name
+      gamepath="\"\/home\/pi\/RetroPie\/roms\/${corename}\/${gamename}\""
+      sed_replace_regex="s/%ROM%/${gamepath}/"
+      command_line=$(echo "${ini_value}" | sed "${sed_replace_regex}")
+      echo "Launching ${command_line}"
+      eval ${command_line}
     else
-      # get the command line for the emulator inside the configuration file for this system
-      iniConfig " = " '"' "${CONFIGDIR}/${corename}/emulators.cfg"
-      iniGet "${emulatorname}"
-      if ! [[ -z "${ini_value}" ]]; then
-        # find command launch line, so configure it with game file name
-        gamepath="\"\/home\/pi\/RetroPie\/roms\/${corename}\/${gamename}\""
-        sed_replace_regex="s/%ROM%/${gamepath}/"
-        command_line=$(echo "${ini_value}" | sed "${sed_replace_regex}")
-        echo "Launching ${command_line}"
-        eval ${command_line}
-      else
-        # no command launch line, bad configuration. Need to work on it a little more
-        echo "No command line found in ${CONFIGDIR}/${corename}/emulators.cfg for emulator : ${emulatorname}. More work please !"
-      fi
+      # no command launch line, bad configuration. Need to work on it a little more
+      echo "No command line found in ${CONFIGDIR}/${corename}/emulators.cfg for emulator : ${emulatorname}. More work please !"
     fi
-  else
-    # no game file found, bad configuration. Need to work on it a little more
-    echo "No game file found in /home/pi/RetroPie/roms/${corename}/${gamename}. More work please !"
   fi
+else
+  # no game file found, bad configuration. Need to work on it a little more
+  echo "No game file found in /home/pi/RetroPie/roms/${corename}/${gamename}. More work please !"
 fi

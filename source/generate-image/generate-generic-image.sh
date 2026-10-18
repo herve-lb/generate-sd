@@ -24,6 +24,7 @@ TEMP_IMAGE="${HOME}/out.img"
 
 # globals ################################################################
 
+# traces are always displayed: -d is kept for the existing calls
 debug="ON"
 logFileName=
 specific=
@@ -145,7 +146,7 @@ function init_log_file() {
       logFileName="${logFileName%.*}.log"
 
       # Remove previous log file if any
-      rm "${logFileName}"
+      rm -f "${logFileName}"
     fi
 }
 
@@ -292,18 +293,16 @@ function mount_image() {
   trace "##########################"
   trace "mount_image ##############"
 
-  # Get the first device available
-  loop=$(sudo losetup -f)
+  # Associate image to the first available device, in one step to avoid a race on the device
+  loop=$(sudo losetup -f --show -P "${TEMP_IMAGE}")
   if [[ -z "${loop}" ]]; then
-    exitonerror "Impossible de trouver un périphérique disponible pour charge l'image (losetup -f error)"
+    exitonerror "Impossible d'associer l'image ${TEMP_IMAGE} à un pseudo périphérique (losetup -f error)"
   fi
-
-  # Associate image to peripheric
-  sudo losetup --show -P "${loop}" ${TEMP_IMAGE}
   trace "Association de ${loop} avec l'image ${TEMP_IMAGE}"
-  if [ $? -ne 0 ]; then
-    exitonerror "Impossible d'associer l'image ${TEMP_IMAGE} au pseudo périphérique ${loop}"
-  fi
+
+  # from now on, always free the image on exit (error, Ctrl-C or normal end)
+  trap umount_image EXIT
+  trap 'exit 1' INT TERM
 
   # Create temporary directory
   trace "Création du répertoire de travail ${WORKING_DIRECTORY}"
@@ -326,17 +325,34 @@ function mount_image() {
 }
 
 function umount_image() {
+  # nothing to free (never mounted, or already freed)
+  if [[ -z "${loop}" ]]; then
+    return
+  fi
+
   trace "##########################"
   trace "umount_image #############"
 
-  trace "Démontage de ${loop}p1"
-  sudo umount "${loop}p1"
-  trace "Démontage de ${loop}p2"
-  sudo umount "${loop}p2"
-  trace "Suppression du répertoire de travail ${WORKING_DIRECTORY}"
-  rm -rf ${WORKING_DIRECTORY}
+  if mountpoint -q "${BOOT_DIRECTORY}"; then
+    trace "Démontage de ${loop}p1"
+    sudo umount "${BOOT_DIRECTORY}"
+  fi
+  if mountpoint -q "${WORKING_DIRECTORY}"; then
+    trace "Démontage de ${loop}p2"
+    sudo umount "${WORKING_DIRECTORY}"
+  fi
+
+  # never delete the working directory while the image is still mounted on it
+  if mountpoint -q "${BOOT_DIRECTORY}" || mountpoint -q "${WORKING_DIRECTORY}"; then
+    warning "Image encore montée sur ${WORKING_DIRECTORY} : répertoire conservé, lancer work/target/clean.sh"
+  else
+    trace "Suppression du répertoire de travail ${WORKING_DIRECTORY}"
+    rm -rf "${WORKING_DIRECTORY}"
+  fi
+
   trace "Désassociation du périphérique ${loop} et de l'image ${TEMP_IMAGE}"
-  $(sudo losetup -d "${loop}")
+  sudo losetup -d "${loop}"
+  loop=
 }
 
 # SD Creation Mangement #######################################################
@@ -839,8 +855,7 @@ function get_options() {
       # Help
       h)
         usage
-        # getting the help message from the comments in this source code
-        sed '/^#H /!d; s/^#H //' "$0"
+        exit 0
         ;;
     esac
   done
@@ -873,7 +888,8 @@ if ! [[ -z ${specific} ]]; then
   create_Specific_SD
 fi
 
-read -p "Les modifications ont été appliquées.\nVérifiez le résultat avant démontage des répertoires... " -n1 -s
+read -p $'Les modifications ont été appliquées.\nVérifiez le résultat avant démontage des répertoires... ' -n1 -s
+echo
 umount_image
 
 prepare_result
