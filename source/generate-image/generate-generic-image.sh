@@ -34,32 +34,33 @@ TEMP_IMAGE="${REAL_HOME}/out.img"
 #
 # Single description of every option, used by getopts, the long names, the help, the value checks
 # and --describe (read by the configuration editor).
-# short|long|variable|type|values|label|category|description
+# short|long|variable|type|values|label|category|title|description
 #   type: flag (no value), file, dir, path, text, choice (one of the values)
 #   values: the possible values of a choice, or the allowed extensions of a file
 #   category: mode, image, game, controller, display, sound, run
+#   title: short name shown by the configuration editor, description: its help
 #   controller, display and sound options can also be changed on a generated image or SD card (--modify)
 
 OPTIONS=(
-  "g|generic|generic|flag|||mode|image générique : le jeu est fourni plus tard sur une clé USB"
-  "s|specific|gamefile|file||rom|mode|image spécifique : jeu à installer. Le système est le nom du répertoire de la ROM (arcade, nes, snes…)"
-  "M|modify|modify_target|path||image ou carte|mode|modifie les réglages d'affichage, de son et de manette d'une image générée (.img) ou d'une carte SD (/dev/sdX)"
-  "i|input|original_retropie_image|file||image|image|image RetroPie d'origine (jamais modifiée)"
-  "o|output|result_image|path||image|image|image à générer (remplacée si elle existe)"
-  "e|emulator|emulatorname|text||émulateur|game|émulateur forcé, par exemple lr-mame2003. Sans cette option, l'émulateur par défaut du système"
-  "S|samples|samples_dir|dir||répertoire|game|samples à installer à côté du jeu"
-  "c|controller|controller_file|file|cfg|fichier.cfg|controller|configuration de manette RetroArch (.cfg) à installer"
-  "l|scanlines|scanlines|choice|horizontal vertical||display|effet scanlines : horizontal pour un jeu horizontal, vertical pour un jeu vertical"
-  "n|no-smoothing|nosmooth|flag|||display|pas de lissage de l'image : pixels nets"
-  "r|reduce|shrink|text||pourcentage:largeurxhauteur[:alignement]|display|réduit l'affichage de ce pourcentage pour un écran de cette résolution, par exemple 5:1024x768:bottom. Alignement : top, bottom, left, right, top-left, top-right, bottom-left, bottom-right"
-  "b|border|borders|text||left=N,right=N,top=N,bottom=N|display|bordures noires en pixels, par exemple left=20,right=20 (côtés absents : 0)"
-  "m|hdmi-mode|hdmi_format|choice|monitor_640x480_60hz monitor_800x600_60hz monitor_1024x768_60hz monitor_1280x1024_60hz tv_720p_60hz tv_1080p_60hz||display|mode HDMI forcé : monitor_* pour un moniteur (DMT), tv_* pour un téléviseur (CEA)"
-  "t|tv-out|tv_output|choice|pal ntsc||display|sortie composite 4:3 pour un téléviseur cathodique"
-  "R|rotate|rotation|choice|90 180 270||display|rotation de l'écran dans le sens horaire"
-  "a|audio|audio_output|choice|jack hdmi||sound|sortie du son (hdmi : sortie par défaut)"
-  "B|batch|batch|flag|||run|sans pause : ne demande pas de vérifier l'image avant le démontage"
-  "d|describe|describe|flag|||run|décrit les options au format JSON (pour l'éditeur de configuration)"
-  "h|help|help|flag|||run|cette aide"
+  "g|generic|generic|flag|||mode|Image générique|image générique : le jeu est fourni plus tard sur une clé USB"
+  "s|specific|gamefile|file||rom|mode|Image spécifique|image spécifique : jeu à installer. Le système est le nom du répertoire de la ROM (arcade, nes, snes…)"
+  "M|modify|modify_target|path||image ou carte|mode|Image ou carte à modifier|modifie les réglages d'affichage, de son et de manette d'une image générée (.img) ou d'une carte SD (/dev/sdX)"
+  "i|input|original_retropie_image|file||image|image|Image RetroPie d'origine|image RetroPie d'origine (jamais modifiée)"
+  "o|output|result_image|path||image|image|Image à générer|image à générer (remplacée si elle existe)"
+  "e|emulator|emulatorname|text||émulateur|game|Émulateur|émulateur forcé, par exemple lr-mame2003. Sans cette option, l'émulateur par défaut du système"
+  "S|samples|samples_dir|dir||répertoire|game|Samples|samples à installer à côté du jeu"
+  "c|controller|controller_file|file|cfg|fichier.cfg|controller|Manette|configuration de manette RetroArch (.cfg) à installer"
+  "l|scanlines|scanlines|choice|horizontal vertical||display|Scanlines|effet scanlines : horizontal pour un jeu horizontal, vertical pour un jeu vertical"
+  "n|no-smoothing|nosmooth|flag|||display|Pas de lissage|pas de lissage de l'image : pixels nets"
+  "r|reduce|shrink|text||pourcentage:largeurxhauteur[:alignement]|display|Réduction de l'écran|réduit l'affichage de ce pourcentage pour un écran de cette résolution, par exemple 5:1024x768:bottom. Alignement : top, bottom, left, right, top-left, top-right, bottom-left, bottom-right"
+  "b|border|borders|text||left=N,right=N,top=N,bottom=N|display|Bordures|bordures noires en pixels, par exemple left=20,right=20 (côtés absents : 0)"
+  "m|hdmi-mode|hdmi_format|choice|monitor_640x480_60hz monitor_800x600_60hz monitor_1024x768_60hz monitor_1280x1024_60hz tv_720p_60hz tv_1080p_60hz||display|Mode HDMI|mode HDMI forcé : monitor_* pour un moniteur (DMT), tv_* pour un téléviseur (CEA)"
+  "t|tv-out|tv_output|choice|pal ntsc||display|Sortie composite|sortie composite 4:3 pour un téléviseur cathodique"
+  "R|rotate|rotation|choice|90 180 270||display|Rotation|rotation de l'écran dans le sens horaire"
+  "a|audio|audio_output|choice|jack hdmi||sound|Sortie du son|sortie du son (hdmi : sortie par défaut)"
+  "B|batch|batch|flag|||run|Sans pause|sans pause : ne demande pas de vérifier l'image avant le démontage"
+  "d|describe|describe|flag|||run|Description JSON|décrit les options au format JSON (pour l'éditeur de configuration)"
+  "h|help|help|flag|||run|Aide|cette aide"
 )
 
 # pairs of long options that cannot be used together
@@ -137,9 +138,9 @@ overscan_bottom=
 
 # Option table access ###################################################
 
-# read the fields of an option line into opt_short, opt_long, opt_var, opt_type, opt_values, opt_label, opt_category, opt_description
+# read the fields of an option line into opt_short, opt_long, opt_var, opt_type, opt_values, opt_label, opt_category, opt_title, opt_description
 function read_option() {
-  IFS='|' read -r opt_short opt_long opt_var opt_type opt_values opt_label opt_category opt_description <<< "$1"
+  IFS='|' read -r opt_short opt_long opt_var opt_type opt_values opt_label opt_category opt_title opt_description <<< "$1"
 }
 
 # find an option by its short (-s) or long (--specific) name, then read its fields
@@ -1071,7 +1072,7 @@ function describe_options() {
     for value in ${opt_values}; do
       values+="${values:+, }$(json_string "${value}")"
     done
-    echo "${separator}    {\"short\": $(json_string "${opt_short}"), \"long\": $(json_string "${opt_long}"), \"type\": $(json_string "${opt_type}"), \"values\": [${values}], \"label\": $(json_string "${opt_label}"), \"category\": $(json_string "${opt_category}"), \"description\": $(json_string "${opt_description}")}"
+    echo "${separator}    {\"short\": $(json_string "${opt_short}"), \"long\": $(json_string "${opt_long}"), \"type\": $(json_string "${opt_type}"), \"values\": [${values}], \"label\": $(json_string "${opt_label}"), \"category\": $(json_string "${opt_category}"), \"title\": $(json_string "${opt_title}"), \"description\": $(json_string "${opt_description}")}"
     separator=","
   done
   echo '  ],'

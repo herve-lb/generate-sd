@@ -254,17 +254,23 @@ Une image générée avant l'enregistrement des options n'a pas de `/boot/mo5-op
 python3 source/config-editor/mo5-config-editor.py
 ```
 
-Prérequis : un poste Ubuntu avec bureau, Python 3 et Tkinter (`sudo apt install python3-tk` s'il manque). L'éditeur est une interface du script de génération : il lui demande la liste de ses options (`--describe`) et construit ses formulaires à partir d'elle. Une nouvelle option du script apparaît donc dans l'éditeur sans le modifier, avec ses valeurs possibles en liste déroulante et sa description sous le champ.
+Prérequis : un poste Ubuntu avec bureau, Python 3 et PySide6 (Qt) :
 
-**Onglet « Générer une image »**
-- Un champ par option, rangé par catégorie (type d'image, images, jeu, manette, affichage, son).
-- **Charger un script…** remplit le formulaire à partir d'un script de `work/target/`. **Enregistrer comme script…** écrit un script autonome au même format, avec des chemins relatifs au répertoire du script.
-- **Générer l'image** lance le script avec `--batch`, sans pause. Les chemins relatifs sont pris par rapport à `work/target/`, comme dans les scripts. Le journal s'affiche en bas de la fenêtre. **Arrêter** interrompt la génération, et l'image est alors démontée proprement.
+```
+sudo apt install python3-pyside6.qtwidgets
+```
 
-**Onglet « Modifier une image ou une carte SD »**
-- Choisir une image (**Image…**) ou une carte SD insérée (liste des disques amovibles ou USB, sans le disque du système).
-- **Lire les réglages** affiche les réglages de `/boot/mo5-options.conf`, ainsi qu'un résumé : jeu, émulateur, manette installée et dates. Une image est lue directement, sans montage ni mot de passe. Une carte est lue là où le bureau l'a montée, ou montée sans mot de passe avec `udisksctl`. Pour une image générée avant `mo5-options.conf`, seuls les réglages de `config.txt` sont relus.
-- **Appliquer les réglages** lance `--modify` avec **tous** les réglages affichés : un champ vide revient à la valeur par défaut. Le champ Manette installe un nouveau fichier ; vide, la manette ne change pas.
+L'éditeur est une interface du script de génération : il lui demande la liste de ses options (`--describe`) et construit ses formulaires à partir d'elle. Chaque champ affiche le titre de l'option et son nom en ligne de commande (`--rotate`) ; sa description complète apparaît en infobulle. Une nouvelle option du script apparaît donc dans l'éditeur sans le modifier. Les valeurs possibles sont proposées en liste déroulante, et un champ rempli désactive les champs avec lesquels il ne se combine pas (`--reduce` et `--border`, `--tv-out` et `--hdmi-mode`).
+
+**Page « Générer une image »**
+- Le type d'image (générique ou spécifique avec sa ROM), les images, le jeu, la manette, l'affichage et le son.
+- **Charger un script…** remplit le formulaire à partir d'un script de `work/target/`. **Enregistrer comme script…** écrit un script autonome au même format. Les chemins sont affichés et enregistrés relativement à `work/target/`, comme dans les scripts.
+- **Générer l'image** lance le script avec `--batch`, sans pause. Le journal s'affiche en bas de la fenêtre. **Arrêter**, dans la barre d'état, interrompt la génération, et l'image est alors démontée proprement.
+
+**Page « Modifier une image ou une carte SD »**
+- Choisir une image (**Parcourir…**) ou une carte SD insérée (liste des disques amovibles ou USB qui contiennent une carte, sans le disque du système).
+- Les réglages de `/boot/mo5-options.conf` sont lus aussitôt, avec un résumé : jeu, émulateur, manette installée, dates et version du générateur. Une image est lue directement, sans montage ni mot de passe. Une carte est lue là où le bureau l'a montée, ou montée sans mot de passe avec `udisksctl`. Pour une image générée avant `mo5-options.conf`, seuls les réglages de `config.txt` sont relus, et un avertissement le signale.
+- **Appliquer les réglages** lance `--modify` avec **tous** les réglages affichés : « Par défaut » ou un champ vide remet la valeur par défaut. Le champ Manette indique la manette installée ; il ne la remplace que si un nouveau fichier `.cfg` est choisi. Les réglages sont relus après la modification.
 
 Le mot de passe `sudo` est demandé une fois, vérifié, puis gardé en mémoire jusqu'à la fermeture de l'éditeur. Il n'est pas demandé si `sudo` n'en a pas besoin.
 

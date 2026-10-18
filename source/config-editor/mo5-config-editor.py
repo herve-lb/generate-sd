@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MO5 configuration editor.
+"""MO5 configuration editor (Qt).
 
 Graphical front-end of generate-generic-image.sh:
 - generate an image, with a form built from the options described by the generator (--describe),
@@ -7,726 +7,797 @@ Graphical front-end of generate-generic-image.sh:
 - read and modify the controller, display and sound settings of a generated image or of an SD card.
 
 The generator stays the single source of truth: this program knows no option by itself.
+Requires PySide6 (Ubuntu: sudo apt install python3-pyside6.qtwidgets).
 """
 
-import json
 import os
-import queue
-import re
 import shlex
 import struct
 import subprocess
-import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
+import sys
+import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-REPOSITORY = os.path.normpath(os.path.join(HERE, "..", ".."))
-GENERATOR = os.path.join(REPOSITORY, "source", "generate-image", "generate-generic-image.sh")
-TARGET_DIRECTORY = os.path.join(REPOSITORY, "work", "target")
-ORIGIN_DIRECTORY = os.path.join(REPOSITORY, "work", "origin")
-RECORD_NAME = "mo5-options.conf"
+from PySide6.QtCore import QProcess, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPixmap, QPolygon, QTextCursor
+from PySide6.QtCore import QPoint
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame,
+                               QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QMainWindow,
+                               QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea,
+                               QSplitter, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
+import mo5_core as core
 
-# Generator description ################################################
-
-
-def describe_generator():
-    """Options, categories and conflicts, as described by the generator."""
-    output = subprocess.run(["bash", GENERATOR, "--describe"], capture_output=True, text=True, check=True).stdout
-    return json.loads(output)
-
-
-# FAT boot partition reading, without mounting ########################
-
-
-def read_boot_files(image_path, names):
-    """Read files from the root directory of the first (FAT) partition of a disk image.
-
-    Returns {lowercase name: text} for the names found. Long file names (VFAT) are supported.
-    """
-    with open(image_path, "rb") as image:
-        image.seek(446)
-        partition = image.read(16)
-        start_sector = struct.unpack_from("<I", partition, 8)[0]
-        offset = start_sector * 512
-
-        def read(position, size):
-            image.seek(offset + position)
-            return image.read(size)
-
-        boot_sector = read(0, 512)
-        bytes_per_sector, sectors_per_cluster, reserved, fats, root_entries, _, _, fat_size16 = struct.unpack_from(
-            "<HBHBHHBH", boot_sector, 11)
-        fat_size = fat_size16 or struct.unpack_from("<I", boot_sector, 36)[0]
-        fat32 = fat_size16 == 0
-        fat_offset = reserved * bytes_per_sector
-        root_offset = fat_offset + fats * fat_size * bytes_per_sector
-        data_offset = root_offset + ((root_entries * 32 + bytes_per_sector - 1) // bytes_per_sector) * bytes_per_sector
-        cluster_size = sectors_per_cluster * bytes_per_sector
-        fat = read(fat_offset, fat_size * bytes_per_sector)
-
-        def chain(cluster):
-            end = 0x0FFFFFF8 if fat32 else 0xFFF8
-            while 2 <= cluster < end:
-                yield cluster
-                if fat32:
-                    cluster = struct.unpack_from("<I", fat, cluster * 4)[0] & 0x0FFFFFFF
-                else:
-                    cluster = struct.unpack_from("<H", fat, cluster * 2)[0]
-
-        def read_clusters(first_cluster):
-            return b"".join(read(data_offset + (cluster - 2) * cluster_size, cluster_size) for cluster in chain(first_cluster))
-
-        if fat32:
-            root = read_clusters(struct.unpack_from("<I", boot_sector, 44)[0])
-        else:
-            root = read(root_offset, root_entries * 32)
-
-        wanted = {name.lower() for name in names}
-        found = {}
-        long_name_parts = []
-        for position in range(0, len(root), 32):
-            entry = root[position:position + 32]
-            if entry[0] == 0:
-                break
-            if entry[0] == 0xE5:
-                long_name_parts = []
-                continue
-            if entry[11] == 0x0F:
-                # long name entry: 13 UTF-16 characters, the entries come last part first
-                characters = entry[1:11] + entry[14:26] + entry[28:32]
-                long_name_parts.insert(0, characters.decode("utf-16-le", errors="ignore"))
-                continue
-            short_name = entry[0:8].decode("latin-1").strip()
-            extension = entry[8:11].decode("latin-1").strip()
-            name = "".join(long_name_parts).split("\x00")[0] if long_name_parts else (
-                short_name + ("." + extension if extension else ""))
-            long_name_parts = []
-            if name.lower() in wanted:
-                cluster = struct.unpack_from("<H", entry, 26)[0] | (struct.unpack_from("<H", entry, 20)[0] << 16)
-                size = struct.unpack_from("<I", entry, 28)[0]
-                data = read_clusters(cluster)[:size] if cluster else b""
-                found[name.lower()] = data.decode("utf-8", errors="replace")
-        return found
+STYLE = """
+QMainWindow, QWidget#page { background: #f4f5f7; }
+QListWidget#sidebar { background: #1f2430; color: #c9d1dd; border: none; font-size: 14px; padding: 12px 8px; outline: 0; }
+QListWidget#sidebar::item { padding: 11px 14px; border-radius: 6px; margin-bottom: 4px; }
+QListWidget#sidebar::item:selected { background: #2f6fed; color: white; }
+QListWidget#sidebar::item:hover:!selected { background: #2a3140; }
+QLabel#appTitle { color: white; font-size: 16px; font-weight: 600; padding: 18px 16px 6px 16px; background: #1f2430; }
+QLabel#appSubtitle { color: #8b95a7; padding: 0 16px 14px 16px; background: #1f2430; }
+QLabel#pageTitle { font-size: 22px; font-weight: 600; color: #1f2430; }
+QLabel#pageSubtitle { color: #6b7280; }
+QFrame#card { background: white; border: 1px solid #e3e6eb; border-radius: 10px; }
+QLabel#cardTitle { font-size: 15px; font-weight: 600; color: #1f2430; }
+QLabel#optionName { color: #9aa1ad; font-family: monospace; font-size: 11px; }
+QLabel#info { background: #eef4ff; border: 1px solid #c9dafc; border-radius: 8px; padding: 10px 12px; color: #1f3b73; }
+QLabel#warning { background: #fff7e6; border: 1px solid #f5d38f; border-radius: 8px; padding: 10px 12px; color: #6b4a00; }
+QPushButton { padding: 7px 14px; border: 1px solid #cfd4dc; border-radius: 6px; background: white; color: #1f2430; }
+QPushButton:hover { background: #f0f2f5; }
+QPushButton:disabled { color: #a0a6b0; background: #f4f5f7; }
+QPushButton#primary { background: #2f6fed; color: white; border: none; font-weight: 600; padding: 8px 18px; }
+QPushButton#primary:hover { background: #255fd0; }
+QPushButton#primary:disabled { background: #9db8f5; }
+QLineEdit, QComboBox { padding: 5px 8px; border: 1px solid #cfd4dc; border-radius: 6px; background: white; min-height: 20px; }
+QLineEdit:focus, QComboBox:focus { border-color: #2f6fed; }
+QComboBox::drop-down { border: none; width: 26px; }
+QComboBox::down-arrow { image: url(ARROW); width: 10px; height: 6px; }
+QComboBox::down-arrow:disabled { image: url(ARROW_DISABLED); }
+QComboBox QAbstractItemView { border: 1px solid #cfd4dc; selection-background-color: #2f6fed; selection-color: white; }
+QLineEdit:disabled, QComboBox:disabled { background: #f0f1f3; color: #a0a6b0; }
+QToolButton { padding: 5px 10px; border: 1px solid #cfd4dc; border-radius: 6px; background: white; }
+QToolButton:hover { background: #f0f2f5; }
+QPlainTextEdit#log { background: #1e1f22; color: #d4d4d4; border: none; border-radius: 8px; padding: 6px; }
+QLabel#logTitle { font-weight: 600; color: #1f2430; }
+QScrollArea { border: none; background: transparent; }
+QStatusBar { background: white; border-top: 1px solid #e3e6eb; }
+"""
 
 
-# SD cards #############################################################
+# Fields ###############################################################
 
 
-def list_sd_cards():
-    """Removable or USB disks that do not hold the running system: [(path, description)]."""
-    output = subprocess.run(["lsblk", "-J", "-o", "PATH,SIZE,MODEL,VENDOR,RM,TRAN,TYPE,MOUNTPOINT"],
-                            capture_output=True, text=True, check=True).stdout
-    cards = []
-    for disk in json.loads(output)["blockdevices"]:
-        if disk["type"] != "disk" or not (disk["rm"] in (True, "1") or disk["tran"] == "usb"):
-            continue
-        # card reader without card
-        if disk["size"] in ("0", "0B", None):
-            continue
-        mountpoints = [child.get("mountpoint") for child in disk.get("children", [])] + [disk.get("mountpoint")]
-        if any(mountpoint in ("/", "/boot", "/boot/efi", "/home") for mountpoint in mountpoints):
-            continue
-        label = " ".join(part.strip() for part in (disk.get("vendor") or "", disk.get("model") or "") if part)
-        cards.append((disk["path"], f"{disk['path']}  {disk['size']}  {label}".strip()))
-    return cards
+class OptionField(QWidget):
+    """Input widget for one option of the generator description."""
 
+    changed = Signal()
 
-def read_sd_card_boot_files(device, names):
-    """Read files of the boot partition of an SD card, mounted by the desktop or with udisksctl (no sudo)."""
-    output = subprocess.run(["lsblk", "-J", "-o", "PATH,TYPE,MOUNTPOINT", device], capture_output=True, text=True,
-                            check=True).stdout
-    partitions = [child for child in json.loads(output)["blockdevices"][0].get("children", []) if child["type"] == "part"]
-    if not partitions:
-        raise RuntimeError(f"{device} n'a pas de partition")
-    boot = partitions[0]
-    mountpoint = boot.get("mountpoint")
-    mounted_here = False
-    if not mountpoint:
-        result = subprocess.run(["udisksctl", "mount", "--no-user-interaction", "-b", boot["path"]],
-                                capture_output=True, text=True)
-        match = re.search(r" at (.+?)\.?$", result.stdout.strip())
-        if result.returncode != 0 or not match:
-            raise RuntimeError(f"Impossible de monter {boot['path']} : {result.stderr.strip() or result.stdout.strip()}")
-        mountpoint = match.group(1)
-        mounted_here = True
-    try:
-        found = {}
-        for name in names:
-            path = os.path.join(mountpoint, name)
-            if os.path.isfile(path):
-                with open(path, encoding="utf-8", errors="replace") as file:
-                    found[name.lower()] = file.read()
-        return found
-    finally:
-        if mounted_here:
-            subprocess.run(["udisksctl", "unmount", "--no-user-interaction", "-b", boot["path"]], capture_output=True)
-
-
-# Settings of an image or card #########################################
-
-
-def parse_record(text):
-    """long_name=value lines of mo5-options.conf."""
-    values = {}
-    for line in text.splitlines():
-        if line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip()
-    return values
-
-
-def settings_from_config_txt(text, hdmi_modes):
-    """Display settings guessed from config.txt, for images generated before mo5-options.conf."""
-    active = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if line and not line.startswith(("#", "[")) and "=" in line:
-            key, value = line.split("=", 1)
-            active[key.strip()] = value.strip()
-    settings = {}
-    if active.get("disable_overscan") == "0" and any(f"overscan_{side}" in active for side in ("left", "right", "top", "bottom")):
-        sides = [f"{side}={active[f'overscan_{side}']}" for side in ("left", "right", "top", "bottom")
-                 if active.get(f"overscan_{side}", "0") != "0"]
-        if sides:
-            settings["border"] = ",".join(sides)
-    rotation = {"1": "90", "2": "180", "3": "270"}.get(active.get("display_rotate", ""))
-    if rotation:
-        settings["rotate"] = rotation
-    if "hdmi_group" in active and "hdmi_mode" in active:
-        for name, (group, mode) in hdmi_modes.items():
-            if active["hdmi_group"] == group and active["hdmi_mode"] == mode:
-                settings["hdmi-mode"] = name
-    if active.get("enable_tvout") == "1":
-        settings["tv-out"] = {"2": "pal", "0": "ntsc"}.get(active.get("sdtv_mode", ""), "pal")
-    return settings
-
-
-# Script files of work/target ##########################################
-
-
-def parse_generation_script(path):
-    """Arguments given to the generator by a work/target script, with paths made absolute."""
-    with open(path, encoding="utf-8") as file:
-        text = file.read()
-    text = text.replace("\\\n", " ")
-    tokens = shlex.split(text, comments=True)
-    start = next((index for index, token in enumerate(tokens) if token.endswith("generate-generic-image.sh")), None)
-    if start is None:
-        raise ValueError("pas d'appel à generate-generic-image.sh dans ce script")
-    arguments = []
-    for token in tokens[start + 1:]:
-        if token in ("2>&1", "|", "||", "&&", ";") or token.startswith((">", "2>")):
-            break
-        arguments.append(token)
-    return arguments
-
-
-def quote(value):
-    """Quote a shell value the way the work/target scripts do."""
-    if re.fullmatch(r"[\w@%+=:,./-]+", value):
-        return value
-    if not re.search(r'["$`\\]', value):
-        return f'"{value}"'
-    return shlex.quote(value)
-
-
-# Generator process ####################################################
-
-
-class GeneratorRun:
-    """Runs the generator through sudo, and streams its output to a queue."""
-
-    def __init__(self, arguments, password, working_directory):
-        command = ["sudo", "-S", "-p", "", "bash", GENERATOR, "--batch"] + arguments
-        self.lines = queue.Queue()
-        self.process = subprocess.Popen(command, cwd=working_directory, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT, text=True, bufsize=1)
-        self.process.stdin.write((password or "") + "\n")
-        self.process.stdin.close()
-        threading.Thread(target=self._read, daemon=True).start()
-
-    def _read(self):
-        for line in self.process.stdout:
-            self.lines.put(line)
-        self.lines.put(None)
-
-    def stop(self):
-        if self.process.poll() is None:
-            self.process.terminate()
-
-
-# User interface #######################################################
-
-
-class OptionsForm(ttk.Frame):
-    """Form built from the generator description, for the given categories."""
-
-    def __init__(self, parent, description, categories, browse_directory):
-        super().__init__(parent)
-        self.description = description
-        self.options = {option["long"]: option for option in description["options"]}
-        self.variables = {}
+    def __init__(self, option, browse_directory):
+        super().__init__()
+        self.option = option
         self.browse_directory = browse_directory
-        labels = {category["name"]: category["label"] for category in description["categories"]}
-        for category in categories:
-            options = [option for option in description["options"] if option["category"] == category]
-            if not options:
-                continue
-            frame = ttk.LabelFrame(self, text=labels.get(category, category), padding=6)
-            frame.pack(fill="x", padx=4, pady=4)
-            frame.columnconfigure(1, weight=1)
-            for row, option in enumerate(options):
-                self._add_field(frame, row, option)
-
-    def _add_field(self, frame, row, option):
-        name = option["long"]
-        ttk.Label(frame, text=f"--{name}").grid(row=row * 2, column=0, sticky="w", padx=(0, 8))
-        if option["type"] == "flag":
-            variable = tk.BooleanVar()
-            ttk.Checkbutton(frame, variable=variable).grid(row=row * 2, column=1, sticky="w")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        kind = option["type"]
+        if kind == "flag":
+            self.widget = QCheckBox(option["title"])
+            self.widget.toggled.connect(self.changed)
+        elif kind == "choice":
+            self.widget = QComboBox()
+            self.widget.addItem("Par défaut", "")
+            for value in option["values"]:
+                self.widget.addItem(value, value)
+            self.widget.currentIndexChanged.connect(self.changed)
         else:
-            variable = tk.StringVar()
-            if option["type"] == "choice":
-                ttk.Combobox(frame, textvariable=variable, values=[""] + option["values"], state="readonly").grid(
-                    row=row * 2, column=1, sticky="ew")
-            else:
-                ttk.Entry(frame, textvariable=variable).grid(row=row * 2, column=1, sticky="ew")
-                if option["type"] in ("file", "dir", "path"):
-                    ttk.Button(frame, text="…", width=3,
-                               command=lambda: self._browse(option, variable)).grid(row=row * 2, column=2, padx=(4, 0))
-        hint = option["description"]
-        if option["label"] and option["type"] not in ("file", "dir", "path"):
-            hint = f"{option['label']} : {hint}"
-        ttk.Label(frame, text=hint, foreground="gray40", wraplength=620, justify="left").grid(
-            row=row * 2 + 1, column=1, columnspan=2, sticky="w", pady=(0, 4))
-        self.variables[name] = variable
+            self.widget = QLineEdit()
+            self.widget.setPlaceholderText(option["label"])
+            self.widget.textChanged.connect(self.changed)
+        layout.addWidget(self.widget, 1)
+        if kind in core.PATH_TYPES:
+            button = QToolButton()
+            button.setText("Parcourir…")
+            button.clicked.connect(self._browse)
+            layout.addWidget(button)
+        self.reset_tooltip()
 
-    def _browse(self, option, variable):
-        initial = os.path.dirname(variable.get()) if variable.get() else self.browse_directory(option)
-        if option["type"] == "dir":
-            path = filedialog.askdirectory(initialdir=initial, title=f"--{option['long']}")
-        elif option["type"] == "path":
-            path = filedialog.asksaveasfilename(initialdir=initial, title=f"--{option['long']}")
+    def reset_tooltip(self):
+        self.setToolTip(f"{self.option['description']}\n\n-{self.option['short']}, --{self.option['long']}")
+
+    def _browse(self):
+        current = self.value() or ""
+        directory = os.path.dirname(current) if current else self.browse_directory(self.option)
+        title = self.option["title"]
+        if self.option["type"] == "dir":
+            path = QFileDialog.getExistingDirectory(self, title, directory)
+        elif self.option["type"] == "path":
+            path, _ = QFileDialog.getSaveFileName(self, title, current or directory)
         else:
             # file options may list their allowed extensions
-            filetypes = [(f"*.{extension}", f"*.{extension}") for extension in option["values"]]
-            path = filedialog.askopenfilename(initialdir=initial, title=f"--{option['long']}",
-                                              filetypes=filetypes + [("Tous les fichiers", "*")])
+            filters = [f"*.{extension} (*.{extension})" for extension in self.option["values"]] + ["Tous les fichiers (*)"]
+            path, _ = QFileDialog.getOpenFileName(self, title, directory, ";;".join(filters))
         if path:
-            variable.set(path)
+            self.set_value(path)
 
-    def clear(self):
-        for variable in self.variables.values():
-            variable.set(False if isinstance(variable, tk.BooleanVar) else "")
+    def value(self):
+        if self.option["type"] == "flag":
+            return True if self.widget.isChecked() else None
+        if self.option["type"] == "choice":
+            return self.widget.currentData() or None
+        return self.widget.text().strip() or None
 
-    def set_values(self, values):
-        """values: {long name: value}, "ON" or True for a flag."""
-        for name, value in values.items():
-            if name in self.variables:
-                variable = self.variables[name]
-                variable.set(value in (True, "ON") if isinstance(variable, tk.BooleanVar) else value)
+    def set_value(self, value):
+        if self.option["type"] == "flag":
+            self.widget.setChecked(value in (True, "ON"))
+        elif self.option["type"] == "choice":
+            index = self.widget.findData(value or "")
+            self.widget.setCurrentIndex(max(index, 0))
+        else:
+            # paths inside the repository are shown relative to work/target, like in the scripts
+            if value and self.option["type"] in core.PATH_TYPES and os.path.isabs(value) and \
+                    value.startswith(core.REPOSITORY + os.sep):
+                value = os.path.relpath(value, core.TARGET_DIRECTORY)
+            self.widget.setText(value or "")
+
+    def set_placeholder(self, text):
+        if isinstance(self.widget, QLineEdit):
+            self.widget.setPlaceholderText(text)
+
+
+def card(title):
+    """A white rounded panel with a title; returns (frame, content layout)."""
+    frame = QFrame()
+    frame.setObjectName("card")
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(18, 14, 18, 16)
+    layout.setSpacing(10)
+    label = QLabel(title)
+    label.setObjectName("cardTitle")
+    layout.addWidget(label)
+    return frame, layout
+
+
+def field_label(option):
+    """Title of an option, with its command line name below."""
+    widget = QWidget()
+    layout = QVBoxLayout(widget)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    layout.addWidget(QLabel(option["title"]))
+    name = QLabel(f"--{option['long']}")
+    name.setObjectName("optionName")
+    layout.addWidget(name)
+    widget.setToolTip(option["description"])
+    return widget
+
+
+class OptionsForm(QWidget):
+    """Cards of option fields, built from the generator description, for the given categories."""
+
+    changed = Signal()
+
+    def __init__(self, description, categories, browse_directory, excluded=()):
+        super().__init__()
+        self.description = description
+        self.fields = {}
+        self.mode_buttons = None
+        self.mode_fields = {}
+        labels = {category["name"]: category["label"] for category in description["categories"]}
+        by_category = {category: [option for option in description["options"]
+                                  if option["category"] == category and option["long"] not in excluded]
+                       for category in categories}
+        by_category = {category: options for category, options in by_category.items() if options}
+
+        # two columns: the biggest category on the right, the others on the left
+        grid = QGridLayout(self)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(16)
+        columns = [QVBoxLayout(), QVBoxLayout()]
+        for column in columns:
+            column.setSpacing(16)
+        biggest = max(by_category, key=lambda category: len(by_category[category])) if len(by_category) > 1 else None
+        for category, options in by_category.items():
+            frame, layout = card(labels.get(category, category))
+            if category == "mode":
+                self._mode_card(layout, options, browse_directory)
+            else:
+                form = QFormLayout()
+                form.setHorizontalSpacing(16)
+                form.setVerticalSpacing(12)
+                form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                for option in options:
+                    field = self._field(option, browse_directory)
+                    if option["type"] == "flag":
+                        form.addRow(QLabel(""), field)
+                    else:
+                        form.addRow(field_label(option), field)
+                layout.addLayout(form)
+            columns[1 if category == biggest else 0].addWidget(frame)
+        for column in columns:
+            column.addStretch(1)
+        grid.addLayout(columns[0], 0, 0)
+        grid.addLayout(columns[1], 0, 1)
+        grid.setColumnStretch(0, 3)
+        grid.setColumnStretch(1, 2)
+        self._update_conflicts()
+
+    def _field(self, option, browse_directory):
+        field = OptionField(option, browse_directory)
+        field.changed.connect(self._update_conflicts)
+        field.changed.connect(self.changed)
+        self.fields[option["long"]] = field
+        return field
+
+    def _mode_card(self, layout, options, browse_directory):
+        """Image type: one radio button per mode, the mode field (if any) enabled when selected."""
+        self.mode_buttons = QButtonGroup(self)
+        for option in options:
+            radio = QRadioButton(option["title"])
+            radio.setToolTip(option["description"])
+            self.mode_buttons.addButton(radio)
+            layout.addWidget(radio)
+            if option["type"] != "flag":
+                field = self._field(option, browse_directory)
+                field.setContentsMargins(24, 0, 0, 0)
+                layout.addWidget(field)
+                self.mode_fields[radio] = field
+            else:
+                self.mode_fields[radio] = option["long"]
+            radio.toggled.connect(self._update_modes)
+        self.mode_buttons.buttons()[0].setChecked(True)
+        self._update_modes()
+
+    def _update_modes(self):
+        for radio, field in self.mode_fields.items():
+            if isinstance(field, OptionField):
+                field.setEnabled(radio.isChecked())
+        self.changed.emit()
+
+    def _update_conflicts(self):
+        """A filled field disables the fields it cannot be combined with."""
+        values = self.values()
+        titles = {option["long"]: option["title"] for option in self.description["options"]}
+        for name, field in self.fields.items():
+            if field in self.mode_fields.values():
+                continue
+            blocking = [other for first, second in self.description["conflicts"]
+                        for this, other in ((first, second), (second, first)) if this == name and other in values]
+            field.setEnabled(not blocking)
+            if blocking:
+                field.setToolTip(f"Incompatible avec « {titles[blocking[0]]} » : videz ce champ pour utiliser celui-ci")
+            else:
+                field.reset_tooltip()
 
     def values(self):
-        """{long name: value} of the filled fields."""
-        result = {}
-        for name, variable in self.variables.items():
-            value = variable.get()
-            if value not in ("", False):
-                result[name] = value
-        return result
-
-    def check_conflicts(self, values):
-        for first, second in self.description["conflicts"]:
-            if first in values and second in values:
-                return f"--{first} et --{second} ne se combinent pas"
-        return None
-
-
-class LogWindow(ttk.Frame):
-    """Generator output, with a stop button."""
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.text = scrolledtext.ScrolledText(self, height=12, font="TkFixedFont", state="disabled")
-        self.text.pack(fill="both", expand=True)
+        """{long name: value} of the filled and enabled fields, mode included."""
+        values = {}
+        for radio, field in self.mode_fields.items():
+            if radio.isChecked() and isinstance(field, str):
+                values[field] = True
+        for name, field in self.fields.items():
+            value = field.value()
+            if value is not None and field.isEnabled():
+                values[name] = value
+        return values
 
     def clear(self):
-        self.text.configure(state="normal")
-        self.text.delete("1.0", "end")
-        self.text.configure(state="disabled")
+        for field in self.fields.values():
+            field.set_value(None)
+        if self.mode_buttons:
+            self.mode_buttons.buttons()[0].setChecked(True)
 
-    def append(self, line):
-        self.text.configure(state="normal")
-        self.text.insert("end", line)
-        self.text.see("end")
-        self.text.configure(state="disabled")
+    def set_values(self, values):
+        for name, value in values.items():
+            if name in self.fields:
+                self.fields[name].set_value(value)
+        # mode: the radio of the given mode option
+        for radio, field in self.mode_fields.items():
+            name = field if isinstance(field, str) else field.option["long"]
+            if name in values:
+                radio.setChecked(True)
+        self._update_conflicts()
 
 
-class Editor(tk.Tk):
+# Pages ################################################################
+
+
+def page_header(title, subtitle):
+    widget = QWidget()
+    layout = QVBoxLayout(widget)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(2)
+    label = QLabel(title)
+    label.setObjectName("pageTitle")
+    layout.addWidget(label)
+    label = QLabel(subtitle)
+    label.setObjectName("pageSubtitle")
+    label.setWordWrap(True)
+    layout.addWidget(label)
+    return widget
+
+
+def scrolled(widget):
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    container = QWidget()
+    container.setObjectName("page")
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 8, 0)
+    layout.addWidget(widget)
+    layout.addStretch(1)
+    area.setWidget(container)
+    return area
+
+
+def browse_directory(option):
+    if option["long"] == "input":
+        return core.ORIGIN_DIRECTORY
+    if option["category"] in ("mode", "game", "controller"):
+        return os.path.join(core.ORIGIN_DIRECTORY, "game-to-install")
+    return core.TARGET_DIRECTORY
+
+
+class GenerationPage(QWidget):
+
+    def __init__(self, window):
+        super().__init__()
+        self.setObjectName("page")
+        self.main_window = window
+        self.description = window.description
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 22, 28, 12)
+        layout.setSpacing(16)
+
+        layout.addWidget(page_header("Générer une image",
+                                     "Une image prête à graver, à partir de l'image RetroPie d'origine. "
+                                     "Les chemins relatifs partent de work/target. Survolez un champ pour son aide."))
+        actions = QHBoxLayout()
+        for text, slot in (("Charger un script…", self.load_script), ("Enregistrer comme script…", self.save_script),
+                           ("Réinitialiser", self.reset)):
+            button = QPushButton(text)
+            button.clicked.connect(lambda checked=False, slot=slot: slot())
+            actions.addWidget(button)
+        actions.addStretch(1)
+        self.run_button = QPushButton("Générer l'image")
+        self.run_button.setObjectName("primary")
+        self.run_button.clicked.connect(self.generate)
+        actions.addWidget(self.run_button)
+        layout.addLayout(actions)
+
+        categories = [category["name"] for category in self.description["categories"] if category["name"] != "run"]
+        self.form = OptionsForm(self.description, categories, browse_directory, excluded=("modify",))
+        layout.addWidget(scrolled(self.form), 1)
+        self.reset()
+
+    def reset(self):
+        self.form.clear()
+        self.form.set_values({"input": os.path.join(core.ORIGIN_DIRECTORY, "origin.img")})
+
+    def check(self, values):
+        if "output" not in values or "input" not in values:
+            return "Indiquer l'image RetroPie d'origine et l'image à générer."
+        if "generic" not in values and "specific" not in values:
+            return "Indiquer la ROM du jeu à installer."
+        pair = core.conflict(self.description, values)
+        if pair:
+            return f"--{pair[0]} et --{pair[1]} ne se combinent pas."
+        return None
+
+    def load_script(self, path=None):
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Script de génération", core.TARGET_DIRECTORY,
+                                                  "Scripts (*.sh);;Tous les fichiers (*)")
+        if not path:
+            return
+        try:
+            values, unknown = core.script_values(self.description, path)
+        except (OSError, ValueError) as error:
+            QMessageBox.critical(self, "Script", str(error))
+            return
+        self.form.clear()
+        self.form.set_values(values)
+        if unknown:
+            QMessageBox.warning(self, "Script", "Options inconnues ignorées :\n" + " ".join(unknown))
+        self.main_window.statusBar().showMessage(f"Script chargé : {os.path.basename(path)}", 8000)
+
+    def save_script(self, path=None):
+        values = self.form.values()
+        error = self.check(values)
+        if error:
+            QMessageBox.warning(self, "Options", error)
+            return
+        if not path:
+            path, _ = QFileDialog.getSaveFileName(self, "Enregistrer le script", core.TARGET_DIRECTORY,
+                                                  "Scripts (*.sh)")
+        if not path:
+            return
+        if not path.endswith(".sh"):
+            path += ".sh"
+        with open(path, "w", encoding="utf-8") as file:
+            file.write(core.script_text(self.description, values, os.path.dirname(path)))
+        os.chmod(path, 0o755)
+        self.main_window.statusBar().showMessage(f"Script enregistré : {os.path.basename(path)}", 8000)
+
+    def generate(self):
+        values = self.form.values()
+        error = self.check(values)
+        if error:
+            QMessageBox.warning(self, "Options", error)
+            return
+        options = {option["long"]: option for option in self.description["options"]}
+        # paths relative to work/target, like the scripts
+        for name, value in values.items():
+            if options[name]["type"] in core.PATH_TYPES:
+                values[name] = os.path.abspath(os.path.join(core.TARGET_DIRECTORY, value))
+        if os.path.exists(values["output"]) and QMessageBox.question(
+                self, "Image existante", f"{os.path.basename(values['output'])} existe déjà et sera remplacée. Continuer ?"
+        ) != QMessageBox.Yes:
+            return
+        self.main_window.run(core.generator_arguments(options, values), f"Génération de {os.path.basename(values['output'])}")
+
+
+class ModificationPage(QWidget):
+
+    def __init__(self, window):
+        super().__init__()
+        self.setObjectName("page")
+        self.main_window = window
+        self.description = window.description
+        self.modes = core.hdmi_modes()
+        self.cards = []
+        self.target = None
+        self.installed_controller = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 22, 28, 12)
+        layout.setSpacing(16)
+
+        top = QHBoxLayout()
+        top.addWidget(page_header("Modifier une image ou une carte SD",
+                                  "Manette, affichage et son d'une image générée ou d'une carte gravée. "
+                                  "Le jeu ne change pas."), 1)
+        self.run_button = QPushButton("Appliquer les réglages")
+        self.run_button.setObjectName("primary")
+        self.run_button.clicked.connect(self.apply)
+        top.addWidget(self.run_button, 0, Qt.AlignBottom)
+        layout.addLayout(top)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(16)
+
+        frame, frame_layout = card("Image ou carte SD")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+        self.image = QLineEdit()
+        self.image.setPlaceholderText("Fichier .img généré")
+        self.image.returnPressed.connect(lambda: self.set_target(self.image.text(), os.path.basename(self.image.text())))
+        button = QToolButton()
+        button.setText("Parcourir…")
+        button.clicked.connect(self.choose_image)
+        grid.addWidget(QLabel("Image"), 0, 0)
+        grid.addWidget(self.image, 0, 1)
+        grid.addWidget(button, 0, 2)
+        self.card_list = QComboBox()
+        self.card_list.activated.connect(self.choose_card)
+        button = QToolButton()
+        button.setText("Actualiser")
+        button.clicked.connect(self.refresh_cards)
+        grid.addWidget(QLabel("Carte SD"), 1, 0)
+        grid.addWidget(self.card_list, 1, 1)
+        grid.addWidget(button, 1, 2)
+        grid.setColumnStretch(1, 1)
+        frame_layout.addLayout(grid)
+        row = QHBoxLayout()
+        self.target_label = QLabel("Aucune image ni carte choisie.")
+        self.target_label.setObjectName("pageSubtitle")
+        row.addWidget(self.target_label, 1)
+        read_button = QPushButton("Relire les réglages")
+        read_button.clicked.connect(self.read_settings)
+        row.addWidget(read_button)
+        frame_layout.addLayout(row)
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        self.summary.setTextFormat(Qt.RichText)
+        self.summary.hide()
+        frame_layout.addWidget(self.summary)
+        content_layout.addWidget(frame)
+
+        categories = [category["name"] for category in self.description["categories"] if category["settings"]]
+        self.form = OptionsForm(self.description, categories, browse_directory)
+        content_layout.addWidget(self.form)
+        note = QLabel("Tous les réglages affichés sont appliqués : « Par défaut » ou un champ vide remet la valeur par "
+                      "défaut. La manette n'est remplacée que si un nouveau fichier est choisi.")
+        note.setObjectName("pageSubtitle")
+        note.setWordWrap(True)
+        content_layout.addWidget(note)
+        layout.addWidget(scrolled(content), 1)
+        self.refresh_cards()
+
+    def set_target(self, target, label):
+        if not target:
+            return
+        self.target = target
+        self.target_label.setText(f"Cible : {label}")
+        self.read_settings()
+
+    def choose_image(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Image générée", core.TARGET_DIRECTORY,
+                                              "Images (*.img);;Tous les fichiers (*)")
+        if path:
+            self.image.setText(path)
+            self.card_list.setCurrentIndex(0)
+            self.set_target(path, os.path.basename(path))
+
+    def refresh_cards(self):
+        try:
+            self.cards = core.list_sd_cards()
+        except (subprocess.CalledProcessError, ValueError):
+            self.cards = []
+        self.card_list.clear()
+        self.card_list.addItem("Aucune carte détectée" if not self.cards else "Choisir une carte…", None)
+        for path, label in self.cards:
+            self.card_list.addItem(label, path)
+
+    def choose_card(self, index):
+        path = self.card_list.itemData(index)
+        if path:
+            self.image.clear()
+            self.set_target(path, self.card_list.itemText(index))
+
+    def show_summary(self, text, warning=False):
+        self.summary.setObjectName("warning" if warning else "info")
+        self.summary.style().unpolish(self.summary)
+        self.summary.style().polish(self.summary)
+        self.summary.setText(text)
+        self.summary.show()
+
+    def read_settings(self):
+        if not self.target:
+            return
+        try:
+            files = core.read_target_boot_files(self.target, [core.RECORD_NAME, "config.txt"])
+        except (OSError, RuntimeError, struct.error, subprocess.CalledProcessError) as error:
+            self.show_summary(f"Impossible de lire {self.target} : {error}", warning=True)
+            return
+        self.form.clear()
+        self.installed_controller = None
+        settings_categories = [category["name"] for category in self.description["categories"] if category["settings"]]
+        options = {option["long"]: option for option in self.description["options"]}
+        if core.RECORD_NAME in files:
+            record = core.parse_record(files[core.RECORD_NAME])
+            self.installed_controller = record.get("controller")
+            settings = {name: value for name, value in record.items()
+                        if name in options and options[name]["category"] in settings_categories and name != "controller"}
+            self.form.set_values(settings)
+            game = f"<b>{record['specific']}</b>" if record.get("specific") else "<b>image générique</b>"
+            lines = [f"Jeu : {game}" + (f" — émulateur {record['emulator']}" if record.get("emulator") else "")]
+            lines.append(f"Manette installée : {record.get('controller', 'aucune')}")
+            dates = f"Générée le {record.get('generated', '?')}"
+            if record.get("modified"):
+                dates += f", modifiée le {record['modified']}"
+            lines.append(dates + f" (générateur {record.get('generator_version', '?')})")
+            self.show_summary("<br>".join(lines))
+        elif "config.txt" in files:
+            self.form.set_values(core.settings_from_config_txt(files["config.txt"], self.modes))
+            self.show_summary(f"Pas de /boot/{core.RECORD_NAME} : image générée avant son introduction. Seuls les "
+                              "réglages de config.txt ont été relus ; le son, les scanlines et le lissage sont à vérifier.",
+                              warning=True)
+        else:
+            self.show_summary("Ni mo5-options.conf ni config.txt : ce n'est pas une image RetroPie ?", warning=True)
+        controller = self.form.fields.get("controller")
+        if controller:
+            controller.set_placeholder(f"Garder {self.installed_controller}" if self.installed_controller
+                                       else "Aucune manette installée")
+
+    def apply(self):
+        if not self.target:
+            QMessageBox.warning(self, "Cible", "Choisir une image ou une carte SD.")
+            return
+        values = self.form.values()
+        pair = core.conflict(self.description, values)
+        if pair:
+            QMessageBox.warning(self, "Options", f"--{pair[0]} et --{pair[1]} ne se combinent pas.")
+            return
+        if not os.path.isfile(self.target) and QMessageBox.question(
+                self, "Carte SD", f"Modifier la carte {self.target} ? Ses partitions vont être démontées.") != QMessageBox.Yes:
+            return
+        options = {option["long"]: option for option in self.description["options"]}
+        self.main_window.run(["--modify", self.target] + core.generator_arguments(options, values),
+                        f"Modification de {os.path.basename(self.target)}", after=self.read_settings)
+
+
+# Main window ##########################################################
+
+
+class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.title("Éditeur de configuration MO5")
-        self.geometry("900x860")
+        self.setWindowTitle("Éditeur de configuration MO5")
+        self.resize(1200, 860)
         self.password = None
-        self.run = None
+        self.process = None
+        self.after_run = None
+        self.label = ""
         try:
-            self.description = describe_generator()
-        except (subprocess.CalledProcessError, json.JSONDecodeError) as error:
-            messagebox.showerror("Générateur", f"Impossible de lire la description des options :\n{error}")
+            self.description = core.describe_generator()
+        except (subprocess.CalledProcessError, ValueError) as error:
+            QMessageBox.critical(None, "Générateur", f"Impossible de lire la description des options :\n{error}")
             raise SystemExit(1)
-        self.options = {option["long"]: option for option in self.description["options"]}
-        self.hdmi_modes = self._hdmi_modes()
 
-        notebook = ttk.Notebook(self)
-        notebook.pack(fill="both", expand=True, padx=6, pady=6)
-        notebook.add(self._generation_tab(notebook), text="Générer une image")
-        notebook.add(self._modification_tab(notebook), text="Modifier une image ou une carte SD")
+        central = QWidget()
+        root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self.log = LogWindow(self)
-        self.log.pack(fill="both", expand=False, padx=6, pady=(0, 6))
-        self.status = tk.StringVar(value="Prêt.")
-        bottom = ttk.Frame(self)
-        bottom.pack(fill="x", padx=6, pady=(0, 6))
-        ttk.Label(bottom, textvariable=self.status).pack(side="left")
-        self.stop_button = ttk.Button(bottom, text="Arrêter", command=self._stop, state="disabled")
-        self.stop_button.pack(side="right")
+        side = QWidget()
+        side.setFixedWidth(240)
+        side.setStyleSheet("background: #1f2430;")
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(0)
+        title = QLabel("Bornes MO5")
+        title.setObjectName("appTitle")
+        side_layout.addWidget(title)
+        subtitle = QLabel("Éditeur de configuration")
+        subtitle.setObjectName("appSubtitle")
+        side_layout.addWidget(subtitle)
+        self.sidebar = QListWidget()
+        self.sidebar.setObjectName("sidebar")
+        self.sidebar.addItems(["Générer une image", "Modifier une image\nou une carte SD"])
+        side_layout.addWidget(self.sidebar, 1)
+        root.addWidget(side)
 
-    def _hdmi_modes(self):
-        """name -> (hdmi_group, hdmi_mode), read from the generator table (for the config.txt fallback)."""
-        modes = {}
-        with open(GENERATOR, encoding="utf-8") as file:
-            for match in re.finditer(r'\[(\w+)\]="(\d+) (\d+)"', file.read()):
-                modes[match.group(1)] = (match.group(2), match.group(3))
-        return modes
+        splitter = QSplitter(Qt.Vertical)
+        self.pages = QStackedWidget()
+        self.generation = GenerationPage(self)
+        self.modification = ModificationPage(self)
+        self.pages.addWidget(self.generation)
+        self.pages.addWidget(self.modification)
+        self.sidebar.currentRowChanged.connect(self.pages.setCurrentIndex)
+        self.sidebar.setCurrentRow(0)
+        splitter.addWidget(self.pages)
+        splitter.addWidget(self._log_panel())
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([640, 200])
+        root.addWidget(splitter, 1)
+        self.setCentralWidget(central)
 
-    def _scrollable(self, parent):
-        """A vertically scrollable frame."""
-        outer = ttk.Frame(parent)
-        canvas = tk.Canvas(outer, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas)
-        inner.bind("<Configure>", lambda event: canvas.configure(scrollregion=canvas.bbox("all")))
-        window = canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width))
-        canvas.configure(yscrollcommand=scrollbar.set)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setMaximumWidth(160)
+        self.progress.hide()
+        self.statusBar().addPermanentWidget(self.progress)
+        self.stop_button = QPushButton("Arrêter")
+        self.stop_button.clicked.connect(self.stop)
+        self.stop_button.hide()
+        self.statusBar().addPermanentWidget(self.stop_button)
+        self.statusBar().showMessage("Prêt.")
 
-        # mouse wheel (X11 buttons 4 and 5) on the canvas under the pointer only
-        def wheel_on(_event):
-            canvas.bind_all("<Button-4>", lambda event: canvas.yview_scroll(-1, "units"))
-            canvas.bind_all("<Button-5>", lambda event: canvas.yview_scroll(1, "units"))
+    def _log_panel(self):
+        panel = QWidget()
+        panel.setObjectName("page")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(28, 6, 28, 12)
+        layout.setSpacing(6)
+        header = QHBoxLayout()
+        label = QLabel("Journal")
+        label.setObjectName("logTitle")
+        header.addWidget(label)
+        header.addStretch(1)
+        clear = QToolButton()
+        clear.setText("Effacer")
+        clear.clicked.connect(lambda: self.log.clear())
+        header.addWidget(clear)
+        layout.addLayout(header)
+        self.log = QPlainTextEdit()
+        self.log.setObjectName("log")
+        self.log.setReadOnly(True)
+        self.log.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.log.setMaximumBlockCount(20000)
+        layout.addWidget(self.log)
+        return panel
 
-        def wheel_off(_event):
-            canvas.unbind_all("<Button-4>")
-            canvas.unbind_all("<Button-5>")
+    def append_log(self, text):
+        self.log.moveCursor(QTextCursor.End)
+        self.log.insertPlainText(text)
+        self.log.moveCursor(QTextCursor.End)
 
-        outer.bind("<Enter>", wheel_on)
-        outer.bind("<Leave>", wheel_off)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        return outer, inner
-
-    def _browse_directory(self, option):
-        if option["category"] == "image" and option["long"] == "input":
-            return ORIGIN_DIRECTORY
-        if option["category"] in ("mode", "game", "controller"):
-            return os.path.join(ORIGIN_DIRECTORY, "game-to-install")
-        return TARGET_DIRECTORY
-
-    # Generation tab #####################################################
-
-    def _generation_tab(self, notebook):
-        tab = ttk.Frame(notebook)
-        buttons = ttk.Frame(tab)
-        buttons.pack(fill="x", pady=(4, 0))
-        ttk.Button(buttons, text="Charger un script…", command=self._load_script).pack(side="left", padx=4)
-        ttk.Button(buttons, text="Enregistrer comme script…", command=self._save_script).pack(side="left", padx=4)
-        ttk.Button(buttons, text="Vider", command=lambda: self.generation_form.clear()).pack(side="left", padx=4)
-        ttk.Button(buttons, text="Générer l'image", command=self._generate).pack(side="right", padx=4)
-
-        outer, inner = self._scrollable(tab)
-        outer.pack(fill="both", expand=True, pady=4)
-        categories = [category["name"] for category in self.description["categories"] if category["name"] != "run"]
-        self.generation_form = OptionsForm(inner, self._without(self.description, {"modify"}), categories,
-                                           self._browse_directory)
-        self.generation_form.pack(fill="x")
-        self.generation_form.set_values({"input": os.path.join(ORIGIN_DIRECTORY, "origin.img")})
-        return tab
-
-    @staticmethod
-    def _without(description, names):
-        """The description without some options."""
-        copy = dict(description)
-        copy["options"] = [option for option in description["options"] if option["long"] not in names]
-        return copy
-
-    def _generation_arguments(self, values):
-        arguments = []
-        for name, value in values.items():
-            arguments.append(f"--{name}")
-            if self.options[name]["type"] != "flag":
-                arguments.append(value)
-        return arguments
-
-    def _load_script(self):
-        path = filedialog.askopenfilename(initialdir=TARGET_DIRECTORY, title="Script de génération",
-                                          filetypes=[("Scripts", "*.sh"), ("Tous les fichiers", "*")])
-        if not path:
-            return
-        try:
-            arguments = parse_generation_script(path)
-        except ValueError as error:
-            messagebox.showerror("Script", str(error))
-            return
-        by_short = {f"-{option['short']}": option for option in self.description["options"]}
-        values = {}
-        index = 0
-        while index < len(arguments):
-            argument = arguments[index]
-            name, _, inline = argument.partition("=")
-            option = self.options.get(name[2:]) if name.startswith("--") else by_short.get(name)
-            if option is None:
-                messagebox.showwarning("Script", f"Option inconnue ignorée : {argument}")
-                index += 1
-                continue
-            if option["type"] == "flag":
-                values[option["long"]] = True
-            else:
-                if inline:
-                    value = inline
-                else:
-                    index += 1
-                    value = arguments[index] if index < len(arguments) else ""
-                if option["type"] in ("file", "dir", "path"):
-                    value = os.path.normpath(os.path.join(os.path.dirname(path), value))
-                values[option["long"]] = value
-            index += 1
-        self.generation_form.clear()
-        self.generation_form.set_values(values)
-        self.status.set(f"Script chargé : {os.path.basename(path)}")
-
-    def _save_script(self):
-        values = self.generation_form.values()
-        error = self._check_generation(values)
-        if error:
-            messagebox.showerror("Options", error)
-            return
-        path = filedialog.asksaveasfilename(initialdir=TARGET_DIRECTORY, title="Enregistrer le script",
-                                            defaultextension=".sh", filetypes=[("Scripts", "*.sh")])
-        if not path:
-            return
-        directory = os.path.dirname(path)
-        lines = [f"{os.path.relpath(GENERATOR, directory)} \\"]
-        for name, value in values.items():
-            option = self.options[name]
-            if option["type"] == "flag":
-                lines.append(f"    --{name} \\")
-            else:
-                if option["type"] in ("file", "dir", "path"):
-                    value = os.path.relpath(os.path.abspath(os.path.join(TARGET_DIRECTORY, value)), directory)
-                lines.append(f"    --{name} {quote(value)} \\")
-        lines += ["    2>&1 \\", "    | tee", ""]
-        with open(path, "w", encoding="utf-8") as file:
-            file.write("\n".join(lines))
-        os.chmod(path, 0o755)
-        self.status.set(f"Script enregistré : {os.path.basename(path)} (à lancer depuis {directory})")
-
-    def _check_generation(self, values):
-        if "generic" not in values and "specific" not in values:
-            return "Choisir --generic ou --specific"
-        for name in ("input", "output"):
-            if name not in values:
-                return f"--{name} est obligatoire"
-        return self.generation_form.check_conflicts(values)
-
-    def _generate(self):
-        values = self.generation_form.values()
-        error = self._check_generation(values)
-        if error:
-            messagebox.showerror("Options", error)
-            return
-        # paths relative to work/target, like the scripts
-        for name, value in values.items():
-            if self.options[name]["type"] in ("file", "dir", "path"):
-                values[name] = os.path.abspath(os.path.join(TARGET_DIRECTORY, value))
-        if os.path.exists(values["output"]) and not messagebox.askyesno(
-                "Image existante", f"{values['output']} existe déjà et sera remplacée. Continuer ?"):
-            return
-        self._start(self._generation_arguments(values), f"Génération de {os.path.basename(values['output'])}")
-
-    # Modification tab ###################################################
-
-    def _modification_tab(self, notebook):
-        tab = ttk.Frame(notebook)
-        source = ttk.LabelFrame(tab, text="Image ou carte SD", padding=6)
-        source.pack(fill="x", padx=4, pady=4)
-        source.columnconfigure(1, weight=1)
-
-        self.target = tk.StringVar()
-        ttk.Label(source, text="Cible :").grid(row=0, column=0, sticky="w")
-        ttk.Entry(source, textvariable=self.target).grid(row=0, column=1, sticky="ew", padx=4)
-        ttk.Button(source, text="Image…", command=self._choose_image).grid(row=0, column=2)
-
-        self.cards = ttk.Combobox(source, state="readonly")
-        ttk.Label(source, text="Carte SD :").grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self.cards.grid(row=1, column=1, sticky="ew", padx=4, pady=(4, 0))
-        self.cards.bind("<<ComboboxSelected>>", self._choose_card)
-        ttk.Button(source, text="Actualiser", command=self._refresh_cards).grid(row=1, column=2, pady=(4, 0))
-
-        ttk.Button(source, text="Lire les réglages", command=self._read_settings).grid(row=2, column=1, sticky="w",
-                                                                                        padx=4, pady=(6, 0))
-        self.recorded = tk.StringVar()
-        ttk.Label(source, textvariable=self.recorded, foreground="gray30", wraplength=760, justify="left").grid(
-            row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
-
-        buttons = ttk.Frame(tab)
-        buttons.pack(fill="x")
-        ttk.Button(buttons, text="Appliquer les réglages", command=self._modify).pack(side="right", padx=4)
-        ttk.Label(buttons, text="Tous les réglages ci-dessous sont appliqués : un champ vide revient à la valeur par défaut. "
-                                "Manette vide : inchangée.", foreground="gray40").pack(side="left", padx=4)
-
-        outer, inner = self._scrollable(tab)
-        outer.pack(fill="both", expand=True, pady=4)
-        categories = [category["name"] for category in self.description["categories"] if category["settings"]]
-        self.modification_form = OptionsForm(inner, self.description, categories, self._browse_directory)
-        self.modification_form.pack(fill="x")
-        self._refresh_cards()
-        return tab
-
-    def _choose_image(self):
-        path = filedialog.askopenfilename(initialdir=TARGET_DIRECTORY, title="Image générée",
-                                          filetypes=[("Images", "*.img"), ("Tous les fichiers", "*")])
-        if path:
-            self.target.set(path)
-            self._read_settings()
-
-    def _refresh_cards(self):
-        try:
-            self.card_list = list_sd_cards()
-        except (subprocess.CalledProcessError, json.JSONDecodeError):
-            self.card_list = []
-        self.cards.configure(values=[description for _, description in self.card_list] or ["(aucune carte détectée)"])
-        self.cards.set("")
-
-    def _choose_card(self, _event=None):
-        index = self.cards.current()
-        if 0 <= index < len(self.card_list):
-            self.target.set(self.card_list[index][0])
-            self._read_settings()
-
-    def _read_settings(self):
-        target = self.target.get()
-        if not target:
-            messagebox.showerror("Cible", "Choisir une image ou une carte SD")
-            return
-        names = [RECORD_NAME, "config.txt"]
-        try:
-            if os.path.isfile(target):
-                files = read_boot_files(target, names)
-            else:
-                files = read_sd_card_boot_files(target, names)
-        except (OSError, RuntimeError, struct.error, subprocess.CalledProcessError) as error:
-            messagebox.showerror("Lecture", f"Impossible de lire {target} :\n{error}")
-            return
-        self.modification_form.clear()
-        if RECORD_NAME in files:
-            record = parse_record(files[RECORD_NAME])
-            settings = {name: value for name, value in record.items()
-                        if name in self.options and self.options[name]["category"] in
-                        [category["name"] for category in self.description["categories"] if category["settings"]]}
-            # the controller field installs a new file: the recorded one is only shown
-            settings.pop("controller", None)
-            self.modification_form.set_values(settings)
-            game = record.get("specific") and f"jeu {record['specific']}" or (record.get("generic") and "image générique") or "?"
-            details = [game]
-            if record.get("emulator"):
-                details.append(f"émulateur {record['emulator']}")
-            details.append(f"manette {record.get('controller', 'aucune installée')}")
-            details.append(f"générée le {record.get('generated', '?')}")
-            if record.get("modified"):
-                details.append(f"modifiée le {record['modified']}")
-            self.recorded.set("Réglages lus dans /boot/" + RECORD_NAME + " : " + ", ".join(details) + ".")
-        elif "config.txt" in files:
-            self.modification_form.set_values(settings_from_config_txt(files["config.txt"], self.hdmi_modes))
-            self.recorded.set("Pas de /boot/" + RECORD_NAME + " (image générée avant son introduction) : seuls les réglages "
-                              "de config.txt ont été relus. Le son, les scanlines et le lissage sont à vérifier.")
-        else:
-            self.recorded.set("Ni /boot/" + RECORD_NAME + " ni config.txt : ce n'est pas une image RetroPie ?")
-        self.status.set(f"Réglages lus : {target}")
-
-    def _modify(self):
-        target = self.target.get()
-        if not target:
-            messagebox.showerror("Cible", "Choisir une image ou une carte SD")
-            return
-        values = self.modification_form.values()
-        error = self.modification_form.check_conflicts(values)
-        if error:
-            messagebox.showerror("Options", error)
-            return
-        if not os.path.isfile(target) and not messagebox.askyesno(
-                "Carte SD", f"Modifier la carte {target} ? Ses partitions vont être démontées."):
-            return
-        self._start(["--modify", target] + self._generation_arguments(values), f"Modification de {target}")
-
-    # Generator runs #####################################################
-
-    def _ask_password(self):
-        """sudo password, checked then kept for the session (not needed when sudo has no password)."""
-        if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode == 0:
+    def ask_password(self):
+        """sudo password, checked then kept for the session (None if cancelled, "" if sudo needs none)."""
+        if not core.sudo_needs_password():
             return ""
         prompt = "Mot de passe sudo (pour monter les images) :"
         while self.password is None:
-            password = simpledialog.askstring("sudo", prompt, show="*", parent=self)
-            if password is None:
+            password, accepted = QInputDialog.getText(self, "sudo", prompt, QLineEdit.Password)
+            if not accepted:
                 return None
-            check = subprocess.run(["sudo", "-S", "-k", "-p", "", "true"], input=password + "\n", capture_output=True,
-                                   text=True)
-            if check.returncode == 0:
+            if core.sudo_password_is_valid(password):
                 self.password = password
             else:
                 prompt = "Mot de passe incorrect. Mot de passe sudo :"
         return self.password
 
-    def _start(self, arguments, label):
-        if self.run is not None:
-            messagebox.showwarning("Générateur", "Une opération est déjà en cours")
+    def run(self, arguments, label, after=None):
+        if self.process is not None:
+            QMessageBox.warning(self, "Générateur", "Une opération est déjà en cours.")
             return
-        password = self._ask_password()
+        password = self.ask_password()
         if password is None:
             return
+        program, program_arguments = core.sudo_command(arguments)
         self.log.clear()
-        self.log.append("$ generate-generic-image.sh --batch " + " ".join(shlex.quote(a) for a in arguments) + "\n")
-        self.status.set(label + "…")
-        self.run = GeneratorRun(arguments, password, TARGET_DIRECTORY)
-        self.stop_button.configure(state="normal")
-        self.after(100, self._poll, label)
+        self.append_log("$ generate-generic-image.sh --batch " + " ".join(shlex.quote(a) for a in arguments) + "\n")
+        self.label = label
+        self.after_run = after
+        self.process = QProcess(self)
+        self.process.setWorkingDirectory(core.TARGET_DIRECTORY)
+        self.process.setProcessChannelMode(QProcess.MergedChannels)
+        self.process.readyReadStandardOutput.connect(
+            lambda: self.append_log(bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")))
+        self.process.finished.connect(self.finished)
+        self.process.start(program, program_arguments)
+        self.process.write((password + "\n").encode())
+        self.process.closeWriteChannel()
+        for page in (self.generation, self.modification):
+            page.run_button.setEnabled(False)
+        self.progress.show()
+        self.stop_button.show()
+        self.statusBar().showMessage(label + "…")
 
-    def _poll(self, label):
-        while True:
-            try:
-                line = self.run.lines.get_nowait()
-            except queue.Empty:
-                self.after(100, self._poll, label)
-                return
-            if line is None:
-                break
-            self.log.append(line)
-        code = self.run.process.wait()
+    def finished(self, code, _status):
         if code == 0:
-            self.status.set(f"{label} : terminé")
+            self.statusBar().showMessage(f"{self.label} : terminé.")
         else:
-            self.status.set(f"{label} : échec (code {code}), voir le journal")
-        self.run = None
-        self.stop_button.configure(state="disabled")
+            self.statusBar().showMessage(f"{self.label} : échec (code {code}), voir le journal.")
+        self.process = None
+        for page in (self.generation, self.modification):
+            page.run_button.setEnabled(True)
+        self.progress.hide()
+        self.stop_button.hide()
+        if code == 0 and self.after_run:
+            self.after_run()
 
-    def _stop(self):
-        if self.run is not None:
-            self.run.stop()
+    def stop(self):
+        if self.process is not None:
+            self.process.terminate()
+
+
+def arrow_image(directory, name, color):
+    """A small down arrow for the combo boxes, drawn by Qt (no SVG plugin needed)."""
+    pixmap = QPixmap(10, 6)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(color))
+    painter.drawPolygon(QPolygon([QPoint(0, 0), QPoint(10, 0), QPoint(5, 6)]))
+    painter.end()
+    path = os.path.join(directory, name)
+    pixmap.save(path)
+    return path
+
+
+def style_sheet(directory):
+    return (STYLE.replace("ARROW_DISABLED", arrow_image(directory, "arrow-disabled.png", "#c3c8d0"))
+            .replace("ARROW", arrow_image(directory, "arrow.png", "#6b7280")))
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    images = tempfile.TemporaryDirectory(prefix="mo5-editor-")
+    app.setStyleSheet(style_sheet(images.name))
+    font = QFont(app.font())
+    font.setPointSize(10)
+    app.setFont(font)
+    window = MainWindow()
+    window.show()
+    return app.exec()
 
 
 if __name__ == "__main__":
-    Editor().mainloop()
+    sys.exit(main())
