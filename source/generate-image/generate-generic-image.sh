@@ -437,7 +437,7 @@ function list_partitions() {
   lsblk -lnpo NAME,TYPE "$1" | awk '$2 == "part" { print $1 }'
 }
 
-# an SD card that can be modified: a whole removable or USB disk, which does not hold the running system
+# an SD card that can be modified: a whole removable, USB or built-in reader (mmc) disk, which does not hold the running system
 function check_sd_card() {
   local device="$1"
   local type removable transport
@@ -446,8 +446,8 @@ function check_sd_card() {
   if [[ "${type}" != "disk" ]]; then
     exitonerror "${device} n'est pas un disque entier : indiquer la carte (par exemple /dev/sdb), pas une partition"
   fi
-  if [[ "${removable}" != "1" && "${transport}" != "usb" ]]; then
-    exitonerror "${device} n'est ni amovible ni USB : par sécurité, il n'est pas modifié"
+  if [[ "${removable}" != "1" && "${transport}" != "usb" && "${transport}" != "mmc" ]]; then
+    exitonerror "${device} n'est ni amovible, ni USB, ni dans un lecteur de carte SD : par sécurité, il n'est pas modifié"
   fi
   if lsblk -lno MOUNTPOINT "${device}" | grep -qxE '/|/boot|/boot/efi|/home|\[SWAP\]'; then
     exitonerror "${device} contient le système en cours d'exécution : il n'est pas modifié"

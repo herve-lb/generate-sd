@@ -133,13 +133,18 @@ def read_boot_files(image_path, names):
 # SD cards #############################################################
 
 
+# transports of SD card readers: USB readers, and built-in readers (mmc), which are not flagged removable
+CARD_TRANSPORTS = ("usb", "mmc")
+
+
 def list_sd_cards():
-    """Removable or USB disks with a card, that do not hold the running system: [(path, description)]."""
-    output = subprocess.run(["lsblk", "-J", "-o", "PATH,SIZE,MODEL,VENDOR,RM,TRAN,TYPE,MOUNTPOINT"],
+    """Removable, USB or built-in reader disks with a card, that do not hold the running system: [(path, description)]."""
+    # NAME keeps the tree output (partitions as children), needed to see the mount points
+    output = subprocess.run(["lsblk", "-J", "--tree", "-o", "NAME,PATH,SIZE,MODEL,VENDOR,RM,TRAN,TYPE,MOUNTPOINT"],
                             capture_output=True, text=True, check=True).stdout
     cards = []
     for disk in json.loads(output)["blockdevices"]:
-        if disk["type"] != "disk" or not (disk["rm"] in (True, "1") or disk["tran"] == "usb"):
+        if disk["type"] != "disk" or not (disk["rm"] in (True, "1") or disk["tran"] in CARD_TRANSPORTS):
             continue
         # card reader without card
         if disk["size"] in ("0", "0B", None):
@@ -148,14 +153,16 @@ def list_sd_cards():
         if any(mountpoint in ("/", "/boot", "/boot/efi", "/home") for mountpoint in mountpoints):
             continue
         label = " ".join(part.strip() for part in (disk.get("vendor") or "", disk.get("model") or "") if part)
+        if not label and disk["tran"] == "mmc":
+            label = "lecteur SD intégré"
         cards.append((disk["path"], f"{disk['path']}  {disk['size']}  {label}".strip()))
     return cards
 
 
 def read_sd_card_boot_files(device, names):
     """Read files of the boot partition of an SD card, mounted by the desktop or with udisksctl (no sudo)."""
-    output = subprocess.run(["lsblk", "-J", "-o", "PATH,TYPE,MOUNTPOINT", device], capture_output=True, text=True,
-                            check=True).stdout
+    output = subprocess.run(["lsblk", "-J", "--tree", "-o", "NAME,PATH,TYPE,MOUNTPOINT", device], capture_output=True,
+                            text=True, check=True).stdout
     partitions = [child for child in json.loads(output)["blockdevices"][0].get("children", []) if child["type"] == "part"]
     if not partitions:
         raise RuntimeError(f"{device} n'a pas de partition")
