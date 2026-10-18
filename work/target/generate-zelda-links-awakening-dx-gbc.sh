@@ -9,5 +9,3 @@
     -n \
     2>&1 \
     | tee
-
-work/origin/game-to-install/gbc/Mega World.cfg
