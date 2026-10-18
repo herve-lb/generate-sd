@@ -1,2 +1,7 @@
-echo "../../source/generate-image/generate-generic-image.sh -d -i ../origin/origin.img -o kiki-kai-kai-pcengine-specific.img -s ../origin/game-to-install/pcengine/Kiki-Kai-Kai.pce -c ../origin/game-to-install/pcengine/Mega\ World.cfg"
-../../source/generate-image/generate-generic-image.sh -d -i ../origin/origin.img -o kiki-kai-kai-pcengine-specific.img -s ../origin/game-to-install/pcengine/Kiki-Kai-Kai.pce -c ../origin/game-to-install/pcengine/Mega\ World.cfg
+../../source/generate-image/generate-generic-image.sh \
+    --input ../origin/origin.img \
+    --output kiki-kai-kai-pcengine-specific.img \
+    --specific ../origin/game-to-install/pcengine/Kiki-Kai-Kai.pce \
+    --controller "../origin/game-to-install/pcengine/Mega World.cfg" \
+    2>&1 \
+    | tee

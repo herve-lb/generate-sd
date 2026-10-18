@@ -24,9 +24,8 @@ TEMP_IMAGE="${HOME}/out.img"
 
 # globals ################################################################
 
-# traces are always displayed: -d is kept for the existing calls
-debug="ON"
 logFileName=
+translated_options=()
 specific=
 generic=
 
@@ -38,11 +37,19 @@ samples_dir=
 controller_file=
 gamefile=
 emulatorname=
-specific_console=
 scanlines=
 nosmooth=
 shader_file=
 shrink=
+borders=
+audio_output=
+tv_output=
+hdmi_format=
+rotation=
+sdtv_mode=
+hdmi_group=
+hdmi_mode=
+display_rotate=
 overscan_left=
 overscan_right=
 overscan_top=
@@ -75,20 +82,20 @@ function check_parameters() {
   # check scanlines option and select the matching shader
   if ! [[ -z "${scanlines}" ]]; then
     case "${scanlines}" in
-      scanlines_horizontal) shader_file="crt-pi.glslp" ;;
-      scanlines_vertical) shader_file="crt-pi-vertical.glslp" ;;
+      horizontal) shader_file="crt-pi.glslp" ;;
+      vertical) shader_file="crt-pi-vertical.glslp" ;;
       *)
         usage
-        exitonerror "Option -l inconnue : ${scanlines} (valeurs possibles : scanlines_horizontal, scanlines_vertical)"
+        exitonerror "Option -l (--scanlines) inconnue : ${scanlines} (valeurs possibles : horizontal, vertical)"
         ;;
     esac
   fi
 
   # check shrink option (percent:WIDTHxHEIGHT[:alignment]) and compute the overscan margins in pixels
   if ! [[ -z "${shrink}" ]]; then
-    if ! [[ "${shrink}" =~ ^([0-9]+)(\.[0-9]+)?:([0-9]+)x([0-9]+)(:(haut|bas|gauche|droite|haut-gauche|haut-droite|bas-gauche|bas-droite))?$ ]] || (( 10#${BASH_REMATCH[1]} >= 50 )); then
+    if ! [[ "${shrink}" =~ ^([0-9]+)(\.[0-9]+)?:([0-9]+)x([0-9]+)(:(top|bottom|left|right|top-left|top-right|bottom-left|bottom-right))?$ ]] || (( 10#${BASH_REMATCH[1]} >= 50 )); then
       usage
-      exitonerror "Option -r invalide : ${shrink} (format attendu : pourcentage:largeurxhauteur[:alignement], par exemple 5:1024x768 ou 5:1024x768:bas, avec un pourcentage inférieur à 50 et un alignement parmi haut, bas, gauche, droite, haut-gauche, haut-droite, bas-gauche, bas-droite)"
+      exitonerror "Option -r (--reduce) invalide : ${shrink} (format attendu : pourcentage:largeurxhauteur[:alignement], par exemple 5:1024x768 ou 5:1024x768:bottom, avec un pourcentage inférieur à 50 et un alignement parmi top, bottom, left, right, top-left, top-right, bottom-left, bottom-right)"
     fi
     local shrink_percent="${shrink%%:*}"
     local shrink_alignment="${BASH_REMATCH[6]}"
@@ -101,14 +108,96 @@ function check_parameters() {
     overscan_top=${overscan_vertical}
     overscan_bottom=${overscan_vertical}
     case "${shrink_alignment}" in
-      haut*) overscan_top=0 ; overscan_bottom=$((overscan_vertical * 2)) ;;
-      bas*) overscan_top=$((overscan_vertical * 2)) ; overscan_bottom=0 ;;
+      top*) overscan_top=0 ; overscan_bottom=$((overscan_vertical * 2)) ;;
+      bottom*) overscan_top=$((overscan_vertical * 2)) ; overscan_bottom=0 ;;
     esac
     case "${shrink_alignment}" in
-      *gauche) overscan_left=0 ; overscan_right=$((overscan_horizontal * 2)) ;;
-      *droite) overscan_left=$((overscan_horizontal * 2)) ; overscan_right=0 ;;
+      *left) overscan_left=0 ; overscan_right=$((overscan_horizontal * 2)) ;;
+      *right) overscan_left=$((overscan_horizontal * 2)) ; overscan_right=0 ;;
     esac
     trace "Shrink ${shrink} : overscan gauche ${overscan_left} px, droite ${overscan_right} px, haut ${overscan_top} px, bas ${overscan_bottom} px"
+  fi
+
+  # check border option (left=N,right=N,top=N,bottom=N in pixels, missing sides are 0)
+  if ! [[ -z "${borders}" ]]; then
+    if ! [[ -z "${shrink}" ]]; then
+      usage
+      exitonerror "Les options -r (--reduce) et -b (--border) règlent toutes les deux l'overscan : il faut choisir l'une ou l'autre"
+    fi
+    overscan_left=0
+    overscan_right=0
+    overscan_top=0
+    overscan_bottom=0
+    local border
+    for border in ${borders//,/ }; do
+      if ! [[ "${border}" =~ ^(left|right|top|bottom)=([0-9]+)$ ]]; then
+        usage
+        exitonerror "Option -b (--border) invalide : ${border} (format attendu : left=N,right=N,top=N,bottom=N en pixels, par exemple left=20,right=20)"
+      fi
+      case "${BASH_REMATCH[1]}" in
+        left) overscan_left=$((10#${BASH_REMATCH[2]})) ;;
+        right) overscan_right=$((10#${BASH_REMATCH[2]})) ;;
+        top) overscan_top=$((10#${BASH_REMATCH[2]})) ;;
+        bottom) overscan_bottom=$((10#${BASH_REMATCH[2]})) ;;
+      esac
+    done
+    trace "Bordures ${borders} : overscan gauche ${overscan_left} px, droite ${overscan_right} px, haut ${overscan_top} px, bas ${overscan_bottom} px"
+  fi
+
+  # check audio option
+  if ! [[ -z "${audio_output}" ]]; then
+    case "${audio_output}" in
+      jack|hdmi) ;;
+      *)
+        usage
+        exitonerror "Option -a (--audio) inconnue : ${audio_output} (valeurs possibles : jack, hdmi)"
+        ;;
+    esac
+  fi
+
+  # check composite output option
+  if ! [[ -z "${tv_output}" ]]; then
+    case "${tv_output}" in
+      pal) sdtv_mode=2 ;;
+      ntsc) sdtv_mode=0 ;;
+      *)
+        usage
+        exitonerror "Option -t (--tv-out) inconnue : ${tv_output} (valeurs possibles : pal, ntsc)"
+        ;;
+    esac
+    if ! [[ -z "${hdmi_format}" ]]; then
+      usage
+      exitonerror "Les options -t (--tv-out, sortie composite) et -m (--hdmi-mode) ne se combinent pas : la borne utilise l'une ou l'autre sortie"
+    fi
+  fi
+
+  # check HDMI mode option: group 1 = CEA (TV modes), group 2 = DMT (computer monitor modes)
+  if ! [[ -z "${hdmi_format}" ]]; then
+    case "${hdmi_format}" in
+      monitor_640x480_60hz) hdmi_group=2 ; hdmi_mode=4 ;;
+      monitor_800x600_60hz) hdmi_group=2 ; hdmi_mode=9 ;;
+      monitor_1024x768_60hz) hdmi_group=2 ; hdmi_mode=16 ;;
+      monitor_1280x1024_60hz) hdmi_group=2 ; hdmi_mode=35 ;;
+      tv_720p_60hz) hdmi_group=1 ; hdmi_mode=4 ;;
+      tv_1080p_60hz) hdmi_group=1 ; hdmi_mode=16 ;;
+      *)
+        usage
+        exitonerror "Option -m (--hdmi-mode) inconnue : ${hdmi_format} (valeurs possibles : monitor_640x480_60hz, monitor_800x600_60hz, monitor_1024x768_60hz, monitor_1280x1024_60hz, tv_720p_60hz, tv_1080p_60hz)"
+        ;;
+    esac
+  fi
+
+  # check rotation option (clockwise)
+  if ! [[ -z "${rotation}" ]]; then
+    case "${rotation}" in
+      90) display_rotate=1 ;;
+      180) display_rotate=2 ;;
+      270) display_rotate=3 ;;
+      *)
+        usage
+        exitonerror "Option -R (--rotate) inconnue : ${rotation} (valeurs possibles : 90, 180, 270)"
+        ;;
+    esac
   fi
 
   # check if the user specify a good filename for the game
@@ -158,9 +247,7 @@ function log_message() {
   local message="[$(date -u)][$1] $2"
 
   # display to console
-  if ! [[ -z "${debug}" ]]; then
-    echo "${message}"
-  fi
+  echo "${message}"
 
   #init log file if needed
   init_log_file
@@ -354,29 +441,16 @@ function apply_common_modifications_on_SD () {
   filename="${BOOT_DIRECTORY}/config.txt"
   trace "## Apply modifications to ${filename}"
 
-  if [[ "${specific_console}" != "pacman_GameStoryVersailles" ]]; then
+  # no black border, except on a composite output where the firmware default overscan suits CRT TVs
+  if [[ -z "${tv_output}" ]]; then
     # uncomment "disable_overscan=1"
     trace "uncomment disable_overscan=1"
     sudo sed -i '0,/#disable_overscan/ s//disable_overscan/' "${filename}"
   fi
 
-  #     Special config for borne arcade1Up with a slight zoom needed
-  if [[ "${specific_console}" == "borne_arcade_1_up" ]]; then
-    trace "replace 'disable_overscan=1' by 'disable_overscan=0' in file ${filename}"
-    sudo sed -i '0,/'"disable_overscan=1"'/ s//'"disable_overscan=0"'/' "${filename}"
-    trace "replace '#overscan_left=16' by 'overscan_left=20' in file ${filename}"
-    sudo sed -i '0,/'"#overscan_left=16"'/ s//'"overscan_left=20"'/' "${filename}"
-    trace "replace '#overscan_right=16' by 'overscan_right=20' in file ${filename}"
-    sudo sed -i '0,/'"#overscan_right=16"'/ s//'"overscan_right=20"'/' "${filename}"
-    trace "replace '#overscan_top=16' by 'overscan_top=0' in file ${filename}"
-    sudo sed -i '0,/'"#overscan_top=16"'/ s//'"overscan_top=0"'/' "${filename}"
-    trace "replace '#overscan_bottom=16' by 'overscan_bottom=0' in file ${filename}"
-    sudo sed -i '0,/'"#overscan_bottom=16"'/ s//'"overscan_bottom=0"'/' "${filename}"
-  fi
-
-  #     Shrink the whole display by a percentage (option -r), replacing the overscan of the cabinet profile
-  if ! [[ -z "${shrink}" ]]; then
-    trace "## Shrink ${shrink}"
+  #     Overscan margins computed from a percentage (option -r) or given in pixels (option -b)
+  if ! [[ -z "${shrink}" ]] || ! [[ -z "${borders}" ]]; then
+    trace "## Overscan ${shrink}${borders}"
     replace_setting "${filename}" disable_overscan "disable_overscan=0"
     replace_setting "${filename}" overscan_left "overscan_left=${overscan_left}"
     replace_setting "${filename}" overscan_right "overscan_right=${overscan_right}"
@@ -402,26 +476,25 @@ function apply_common_modifications_on_SD () {
   trace "add dtoverlay=disable-bt"
   sudo sed -i '$adtoverlay=disable-bt' "${filename}"
 
-  #     Special config for borne Rene Pierre with a 270° orientation
-  if [[ "${specific_console}" == "borne_rene_pierre" ]]; then
-    trace "add display_rotate=1"
-    sudo sed -i '$adisplay_rotate=1' "${filename}"
-
-    # select 800x600 4:3
-    trace "add hdmi_group=2"
-    sudo sed -i '$ahdmi_group=2' "${filename}"
-    trace "add hdmi_mode=9"
-    sudo sed -i '$ahdmi_mode=9' "${filename}"
+  #     Display rotation (option -R)
+  if ! [[ -z "${display_rotate}" ]]; then
+    trace "add display_rotate=${display_rotate} (${rotation}°)"
+    sudo sed -i '$adisplay_rotate='"${display_rotate}" "${filename}"
   fi
-  
-  #     Special config for simulation borne pacman in GameStory Versailles
-  if [[ "${specific_console}" == "pacman_GameStoryVersailles" ]]; then
+
+  #     Forced HDMI mode (option -m)
+  if ! [[ -z "${hdmi_format}" ]]; then
+    trace "add hdmi_group=${hdmi_group} hdmi_mode=${hdmi_mode} (${hdmi_format})"
+    sudo sed -i '$ahdmi_group='"${hdmi_group}" "${filename}"
+    sudo sed -i '$ahdmi_mode='"${hdmi_mode}" "${filename}"
+  fi
+
+  #     Composite output, 4:3 (option -t)
+  if ! [[ -z "${tv_output}" ]]; then
     trace "add enable_tvout=1"
     sudo sed -i '$aenable_tvout=1' "${filename}"
-
-    # select PAL 4:3
-    trace "add sdtv_mode=2 for PAL"
-    sudo sed -i '$asdtv_mode=2' "${filename}"
+    trace "add sdtv_mode=${sdtv_mode} (${tv_output})"
+    sudo sed -i '$asdtv_mode='"${sdtv_mode}" "${filename}"
     trace "add sdtv_aspect=1 for 4:3"
     sudo sed -i '$asdtv_aspect=1' "${filename}"
   fi
@@ -448,32 +521,7 @@ function apply_common_modifications_on_SD () {
     replace_setting "${filename}" video_font_enable 'video_font_enable = "false"'
   done
 
-  #
-  # retropie/opt/retropie/emulators/retroarch/retroarch.cfg
-  #
-  filename="${WORKING_DIRECTORY}/opt/retropie/emulators/retroarch/retroarch.cfg"
 
-  #     Special config for borne pacman MO5 with a screen slightly shifted
-  if [[ "${specific_console}" == "borne_pacman_mo5" ]]; then
-
-    # Index of the aspect ratio selection in the menu.
-    # 19 = Config, 20 = 1:1 PAR, 21 = Core Provided, 22 = Custom Aspect Ratio
-    sudo sed -i '/aspect_ratio_index/ s/19/22/g' "${filename}"
-
-    # uncomment and set to 366 "#custom_viewport_width = 0"
-    sudo sed -i '/custom_viewport_width/ s/#//g' "${filename}"
-    sudo sed -i '/custom_viewport_width/ s/0/"366"/g' "${filename}"
-    # uncomment and set to 476 "#custom_viewport_height = 0"
-    sudo sed -i '/custom_viewport_height/ s/#//g' "${filename}"
-    sudo sed -i '/custom_viewport_height/ s/0/"476"/g' "${filename}"
-    # uncomment and set to 149 "#custom_viewport_x = 0"
-    sudo sed -i '/custom_viewport_x/ s/#//g' "${filename}"
-    sudo sed -i '/custom_viewport_x/ s/0/"149"/g' "${filename}"
-    # uncomment and set to 5 "#custom_viewport_y = 0"
-    sudo sed -i '/custom_viewport_y/ s/#//g' "${filename}"
-    sudo sed -i '/custom_viewport_y/ s/0/"5"/g' "${filename}"
-  fi
-  
   #
   # retropie/opt/retropie/configs/all/retroarch.cfg
   #
@@ -516,8 +564,8 @@ function apply_common_modifications_on_SD () {
   #
   filename="${WORKING_DIRECTORY}/etc/asound.conf"
 
-  #     Special config for bornes arcade1Up and Rene Pierre with use of jack output instead of HDMI
-  if [[ "${specific_console}" == "borne_arcade_1_up" || "${specific_console}" == "borne_rene_pierre" ]]; then
+  #     Sound on the jack output instead of HDMI (option -a jack). hdmi keeps the default output
+  if [[ "${audio_output}" == "jack" ]]; then
     trace "add 'pcm.!default {type hw card 1}' in file ${filename}"
     echo "pcm.!default {type hw card 1}" | sudo tee "${filename}"
     trace "add 'ctl.!default {type hw card 1}' in file ${filename}"
@@ -688,14 +736,97 @@ function create_Specific_SD () {
 function usage() {
   echo
   echo "USAGE:"
-  echo "image générique: $(basename $0) -g (-x \"nom de la console\") (-l scanlines_horizontal|scanlines_vertical) (-n) (-r pourcentage:largeurxhauteur[:alignement]) -i \"image Retropie d'origine\" -o \"image à générer\""
-  echo "image spécifique: $(basename $0) -s \"fichier du jeu\" (-p \"répertoire des samples\") (-e \"nom de l'émulateur\") (-c \"fichier controller à installer\") (-x \"nom de la console dont il faut appliquer les paramètres spécifiques) (-l scanlines_horizontal|scanlines_vertical) (-n pas de lissage) (-r pourcentage:largeurxhauteur[:alignement] réduction de l'écran) -i \"image Retropie d'origine\" -o \"image à générer\""
+  echo "image générique : $(basename "$0") --generic --input <image> --output <image> (options d'affichage et de son)"
+  echo "image spécifique : $(basename "$0") --specific <rom> --input <image> --output <image> (options du jeu) (options d'affichage et de son)"
   echo
+  echo "Chaque option a une forme courte (-s rom) et une forme longue (--specific rom ou --specific=rom)."
+  echo
+  echo "  -g, --generic                     image générique (jeu sur clé USB)"
+  echo "  -s, --specific <rom>              image spécifique : jeu à installer"
+  echo "  -i, --input <image>               image RetroPie d'origine"
+  echo "  -o, --output <image>              image à générer"
+  echo "  -h, --help                        cette aide"
+  echo
+  echo "options du jeu :"
+  echo "  -e, --emulator <émulateur>        émulateur forcé, par exemple lr-mame2003"
+  echo "  -c, --controller <fichier.cfg>    configuration de manette à installer"
+  echo "  -S, --samples <répertoire>        samples à installer à côté du jeu"
+  echo
+  echo "options d'affichage et de son :"
+  echo "  -l, --scanlines horizontal|vertical"
+  echo "  -n, --no-smoothing                pas de lissage de l'image"
+  echo "  -r, --reduce <pourcentage>:<largeur>x<hauteur>[:<alignement>]"
+  echo "                                    réduction de l'écran, alignement : top, bottom, left, right, top-left, top-right, bottom-left, bottom-right"
+  echo "  -b, --border left=N,right=N,top=N,bottom=N"
+  echo "                                    bordures noires en pixels (côtés absents : 0), ne se combine pas avec -r"
+  echo "  -m, --hdmi-mode monitor_640x480_60hz|monitor_800x600_60hz|monitor_1024x768_60hz|monitor_1280x1024_60hz|tv_720p_60hz|tv_1080p_60hz"
+  echo "                                    mode HDMI forcé"
+  echo "  -t, --tv-out pal|ntsc             sortie composite 4:3, ne se combine pas avec -m"
+  echo "  -R, --rotate 90|180|270           rotation de l'écran dans le sens horaire"
+  echo "  -a, --audio jack|hdmi             sortie du son"
+  echo
+}
+
+# long option names (without --) and their short equivalent
+declare -A LONG_OPTIONS=(
+  [generic]=g [specific]=s [input]=i [output]=o [help]=h
+  [emulator]=e [controller]=c [samples]=S
+  [scanlines]=l [no-smoothing]=n [reduce]=r [border]=b [hdmi-mode]=m [tv-out]=t [rotate]=R [audio]=a
+)
+# short options without value
+FLAG_OPTIONS="ghn"
+
+# "-s (--specific)" for error messages
+function option_names() {
+  local name
+  for name in "${!LONG_OPTIONS[@]}"; do
+    if [[ "${LONG_OPTIONS[${name}]}" == "$1" ]]; then
+      echo "-$1 (--${name})"
+      return
+    fi
+  done
+  echo "-$1"
+}
+
+# translate the long options (--name value or --name=value) into the short ones read by getopts
+function translate_long_options() {
+  translated_options=()
+  local arg name short
+  while (( $# > 0 )); do
+    arg="$1"
+    shift
+    case "${arg}" in
+      --)
+        translated_options+=("$@")
+        break
+        ;;
+      --*)
+        name="${arg%%=*}"
+        name="${name#--}"
+        short="${LONG_OPTIONS[${name}]}"
+        if [[ -z "${short}" ]]; then
+          usage
+          exitonerror "L'option \"--${name}\" est invalide"
+        fi
+        if [[ "${arg}" == *=* ]]; then
+          if [[ "${FLAG_OPTIONS}" == *"${short}"* ]]; then
+            exitonerror "L'option $(option_names "${short}") ne prend pas de valeur"
+          fi
+          translated_options+=("-${short}" "${arg#*=}")
+        else
+          translated_options+=("-${short}")
+        fi
+        ;;
+      *)
+        translated_options+=("${arg}")
+        ;;
+    esac
+  done
 }
 
 function get_options() {
 
-  while getopts "gc:e:p:s:i:o:x:l:r:ndh" option ;
+  while getopts ":gc:e:S:s:i:o:l:r:b:a:t:m:R:nh" option ;
   do
     trace "getopts OPTIND=$OPTIND, Option=$option, OPTARG=$OPTARG, OPTERR=$OPTERR"
     case "${option}" in
@@ -720,7 +851,7 @@ function get_options() {
         ;;
 
       #Specific samples directory to copy beside the game
-      p)
+      S)
         trace "Samples directory"
         samples_dir=${OPTARG}
         ;;
@@ -742,14 +873,29 @@ function get_options() {
         generic="ON"
         ;;
 
-      d)
-        trace "Mode Debug ON"
-        debug="ON"
+      a)
+        trace "Audio output"
+        audio_output=${OPTARG}
         ;;
 
-      x)
-        trace "specific instructions for specifics consoles"
-        specific_console=${OPTARG}
+      t)
+        trace "Composite output"
+        tv_output=${OPTARG}
+        ;;
+
+      m)
+        trace "HDMI mode"
+        hdmi_format=${OPTARG}
+        ;;
+
+      R)
+        trace "Rotation"
+        rotation=${OPTARG}
+        ;;
+
+      b)
+        trace "Borders"
+        borders=${OPTARG}
         ;;
 
       l)
@@ -769,12 +915,13 @@ function get_options() {
 
       #Missing Arguments
       :)
-        exitonerror "L'option \"$OPTARG\" requiert un argument"
+        exitonerror "L'option $(option_names "${OPTARG}") requiert un argument"
         ;;
 
       #Invalid Option
       \?)
-        exitonerror "L'option \"$OPTARG\" est invalide"
+        usage
+        exitonerror "L'option \"-${OPTARG}\" est invalide"
         ;;
 
       # Help
@@ -788,7 +935,8 @@ function get_options() {
 
 # Main start here #######################################################
 
-get_options "$@"
+translate_long_options "$@"
+get_options "${translated_options[@]}"
 
 install_prerequisites
 

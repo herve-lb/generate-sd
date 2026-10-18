@@ -36,7 +36,7 @@ work/origin/
 
 - **L'image RetroPie** est copiée sous le nom `work/origin/origin.img`. Les fichiers `*.img` sont ignorés par git.
 - **Les ROMs** sont rangées dans un sous-répertoire de `game-to-install/`. **Son nom doit être celui du répertoire de ROMs dans RetroPie** (`arcade`, `nes`, `snes`, `pcengine`, `megadrive`…), car le script en déduit le système. Par exemple, `game-to-install/snes/Pocky-Rocky.smc` est installé dans `/home/pi/RetroPie/roms/snes/`.
-- **Les fichiers de manette** (`.cfg` RetroArch) et **les répertoires de samples** peuvent être placés n'importe où. Leurs chemins sont passés au script avec `-c` et `-p`.
+- **Les fichiers de manette** (`.cfg` RetroArch) et **les répertoires de samples** peuvent être placés n'importe où. Leurs chemins sont passés au script avec `-c` et `-S`.
 
 ### 1.3 Lancer la génération avec un script de jeu
 
@@ -47,50 +47,79 @@ cd work/target
 ./generate-pacman-0.78-lf-mame2003.sh
 ```
 
-L'image est produite dans `work/target/` sous le nom donné par `-o` (ici `pacman.mame2003.img`).
+L'image est produite dans `work/target/` sous le nom donné par `--output` (ici `pacman.mame2003.mo5.img`).
 
-Pour ajouter un jeu, copiez un script existant et adaptez sa ligne de commande. Exemple : `generate-pacman-0.78-lf-mame2003.sh`.
+Pour ajouter un jeu, copiez un script existant et adaptez sa ligne de commande. Chaque script est autonome : il contient toutes les options du jeu et de la borne (affichage, son), une par ligne, sous leur forme longue pour rester lisibles. Exemple : `game_story_versailles_tetris_cocktail_mame2010.sh`.
 
 ```
-../../source/generate-image/generate-generic-image.sh -d \
-  -i ../origin/origin.img \
-  -o pacman.mame2003.img \
-  -s ../origin/game-to-install/arcade/pacman.zip \
-  -c "../origin/game-to-install/arcade/Mega World.borne.1 bouton-boutongauche-2.cfg" \
-  -e lr-mame2003 \
-  -x borne_pacman_mo5
+# borne René Pierre (cocktail) : écran tourné de 90° (display_rotate=1), moniteur VGA 800x600, son sur la prise jack
+
+../../source/generate-image/generate-generic-image.sh \
+    --input ../origin/origin.img \
+    --output tetris.cocktail.mame2010.img \
+    --specific ../origin/game-to-install/arcade/atetrisc.zip \
+    --controller "../origin/game-to-install/arcade/DragonRise Inc.   Generic   USB  Joystick  .cfg" \
+    --emulator lr-mame2010 \
+    --rotate 90 \
+    --hdmi-mode monitor_800x600_60hz \
+    --audio jack \
+    2>&1 \
+    | tee
 ```
 
 ### 1.4 Appeler directement le script
 
 ```
 # image générique (le jeu est fourni plus tard sur une clé USB)
-source/generate-image/generate-generic-image.sh -d -g -i <image d'origine> -o <image résultat> \
-  [-x <profil borne>] [-l <scanlines>] [-n] [-r <pourcentage>:<largeur>x<hauteur>[:<alignement>]]
+source/generate-image/generate-generic-image.sh --generic \
+  --input <image d'origine> --output <image résultat> \
+  [<options d'affichage et de son>]
 
 # image spécifique (un jeu installé sur la carte)
-source/generate-image/generate-generic-image.sh -d -i <image d'origine> -o <image résultat> \
-  -s <rom> [-e <émulateur>] [-c <fichier .cfg manette>] [-p <répertoire samples>] [-x <profil borne>] [-l <scanlines>] [-n] \
-  [-r <pourcentage>:<largeur>x<hauteur>[:<alignement>]]
+source/generate-image/generate-generic-image.sh --specific <rom> \
+  --input <image d'origine> --output <image résultat> \
+  [--emulator <émulateur>] [--controller <fichier .cfg>] [--samples <répertoire>] \
+  [<options d'affichage et de son>]
+
+# options d'affichage et de son
+  [--scanlines <scanlines>] [--no-smoothing] \
+  [--reduce <pourcentage>:<largeur>x<hauteur>[:<alignement>] | --border <bordures>] \
+  [--hdmi-mode <mode HDMI> | --tv-out <sortie composite>] [--rotate <degrés>] [--audio <sortie audio>]
 ```
+
+Chaque option a une forme courte et une forme longue, au choix : `-s <rom>`, `--specific <rom>` ou `--specific=<rom>`. Les formes longues suivent la convention GNU (POSIX ne définit que les options courtes) : le script les traduit en options courtes avant de les lire avec `getopts`. Une forme longue inconnue, ou une valeur donnée à une option qui n'en prend pas (`--no-smoothing=oui`), arrête le script.
 
 | Option | Rôle |
 |---|---|
-| `-i <image>` | Image RetroPie source. Elle n'est **jamais modifiée** : le script travaille sur une copie (`$HOME/out.img`). |
-| `-o <image>` | Fichier résultat. Il est supprimé au début s'il existe déjà. |
-| `-g` | Mode **générique** : modifications communes + lanceur clé USB. |
-| `-s <rom>` | Mode **spécifique** : modifications communes + jeu installé + lanceur du jeu. |
-| `-e <émulateur>` | (avec `-s`) Émulateur forcé au lancement du jeu, par ex. `lr-mame2003` ou `lr-mame2010`. Le nom doit figurer dans `/opt/retropie/configs/<système>/emulators.cfg`. Recommandé : sans `-e`, runcommand peut demander de choisir un émulateur au démarrage (voir [§3.3](#33-mode-spécifique--s-rom)). |
-| `-c <fichier .cfg>` | (avec `-s`) Configuration de manette à installer. |
-| `-p <répertoire>` | (avec `-s`) Répertoire de samples à installer à côté du jeu. |
-| `-x <profil>` | Réglages propres à une borne : `borne_arcade_1_up`, `borne_rene_pierre`, `borne_pacman_mo5`, `pacman_GameStoryVersailles`. Un nom inconnu n'est pas signalé comme une erreur : seules les modifications communes sont appliquées. |
-| `-l <scanlines>` | Effet scanlines par shader RetroArch : `scanlines_horizontal` (shader `crt-pi`) ou `scanlines_vertical` (shader `crt-pi-vertical`). Voir [§1.8](#18-choisir-les-scanlines--l) pour choisir. Une autre valeur arrête le script avant toute modification. |
-| `-n` | Désactive le lissage de l'image (`video_smooth`) : pixels nets. Utile pour les jeux en basse résolution très agrandis, comme la Game Boy. Implicite avec `-l`. |
-| `-r <pourcentage>:<largeur>x<hauteur>[:<alignement>]` | Réduit tout l'affichage (splash, EmulationStation, jeu) de ce pourcentage, avec une bordure noire autour, par overscan dans `config.txt`. La résolution est celle de l'écran de la borne, par exemple `-r 5:1024x768`. Elle sert à convertir le pourcentage en pixels : si l'écran a une autre résolution, la réduction réelle sera différente. L'image est centrée, sauf si un alignement la cale contre un bord ou dans un coin : `haut`, `bas`, `gauche`, `droite`, `haut-gauche`, `haut-droite`, `bas-gauche` ou `bas-droite`, par exemple `-r 5:1024x768:bas`. Le pourcentage peut être décimal (`2.5`) et doit être inférieur à 50. Remplace l'overscan d'un profil `-x`. Un format invalide arrête le script avant toute modification. |
-| `-d` | Sans effet : les traces sont toujours affichées à l'écran et écrites dans le journal. L'option est conservée parce que les scripts de `work/target/` l'utilisent. |
-| `-h` | Affiche la syntaxe d'appel et s'arrête. |
+| `-i <image>`<br>`--input <image>` | Image RetroPie source. Elle n'est **jamais modifiée** : le script travaille sur une copie (`$HOME/out.img`). |
+| `-o <image>`<br>`--output <image>` | Fichier résultat. Il est supprimé au début s'il existe déjà. |
+| `-g`<br>`--generic` | Mode **générique** : modifications communes + lanceur clé USB. |
+| `-s <rom>`<br>`--specific <rom>` | Mode **spécifique** : modifications communes + jeu installé + lanceur du jeu. |
+| `-e <émulateur>`<br>`--emulator <émulateur>` | (avec `-s`) Émulateur forcé au lancement du jeu, par ex. `lr-mame2003` ou `lr-mame2010`. Le nom doit figurer dans `/opt/retropie/configs/<système>/emulators.cfg`. Recommandé : sans `-e`, runcommand peut demander de choisir un émulateur au démarrage (voir [§3.3](#33-mode-spécifique--s-rom)). |
+| `-c <fichier .cfg>`<br>`--controller <fichier .cfg>` | (avec `-s`) Configuration de manette à installer. |
+| `-S <répertoire>`<br>`--samples <répertoire>` | (avec `-s`) Répertoire de samples à installer à côté du jeu. |
+| `-l <scanlines>`<br>`--scanlines <scanlines>` | Effet scanlines par shader RetroArch : `horizontal` (shader `crt-pi`) ou `vertical` (shader `crt-pi-vertical`). Voir [§1.8](#18-choisir-les-scanlines--l) pour choisir. Une autre valeur arrête le script avant toute modification. |
+| `-n`<br>`--no-smoothing` | Désactive le lissage de l'image (`video_smooth`) : pixels nets. Utile pour les jeux en basse résolution très agrandis, comme la Game Boy. Implicite avec `-l`. |
+| `-r <pourcentage>:<largeur>x<hauteur>[:<alignement>]`<br>`--reduce <pourcentage>:<largeur>x<hauteur>[:<alignement>]` | Réduit tout l'affichage (splash, EmulationStation, jeu) de ce pourcentage, avec une bordure noire autour, par overscan dans `config.txt`. La résolution est celle de l'écran de la borne, par exemple `-r 5:1024x768`. Elle sert à convertir le pourcentage en pixels : si l'écran a une autre résolution, la réduction réelle sera différente. L'image est centrée, sauf si un alignement la cale contre un bord ou dans un coin : `top`, `bottom`, `left`, `right`, `top-left`, `top-right`, `bottom-left` ou `bottom-right`, par exemple `-r 5:1024x768:bottom`. Le pourcentage peut être décimal (`2.5`) et doit être inférieur à 50. Ne se combine pas avec `-b`. |
+| `-b left=N,right=N,top=N,bottom=N`<br>`--border left=N,right=N,top=N,bottom=N` | Bordures noires autour de tout l'affichage, en pixels, par overscan dans `config.txt`. Les côtés absents valent 0 : `-b left=20,right=20`. Des marges différentes décalent l'image, par exemple pour compenser un écran décalé. Ne se combine pas avec `-r`. |
+| `-m <mode HDMI>`<br>`--hdmi-mode <mode HDMI>` | Force le mode de la sortie HDMI (voir le tableau ci-dessous). Ne se combine pas avec `-t`. |
+| `-t pal\|ntsc`<br>`--tv-out pal\|ntsc` | Sortie vidéo composite en 4:3, pour un téléviseur cathodique. L'overscan par défaut du firmware est conservé (bordure de 32 px), sauf avec `-r` ou `-b`. Ne se combine pas avec `-m`. |
+| `-R 90\|180\|270`<br>`--rotate 90\|180\|270` | Rotation de tout l'affichage, dans le sens horaire. |
+| `-a jack\|hdmi`<br>`--audio jack\|hdmi` | Sortie du son. `jack` envoie le son sur la prise jack. `hdmi` garde la sortie par défaut de l'image (HDMI) : c'est le comportement sans `-a`. |
+| `-h`<br>`--help` | Affiche la syntaxe d'appel et s'arrête. |
 
-`-g` et `-s` s'excluent mutuellement, et l'un des deux est obligatoire. `-e`, `-c` et `-p` ne sont pris en compte qu'en mode spécifique.
+`-g` et `-s` s'excluent mutuellement, et l'un des deux est obligatoire. `-e`, `-c` et `-S` ne sont pris en compte qu'en mode spécifique. Une valeur inconnue, ou une combinaison interdite (`-r` avec `-b`, `-t` avec `-m`), arrête le script avant toute modification.
+
+Modes HDMI de `-m`. Le firmware connaît deux familles de modes : **moniteur** (norme VESA DMT, *Display Monitor Timings*, `hdmi_group=2`) et **téléviseur** (norme CEA-861, *Consumer Electronics Association*, `hdmi_group=1`). Le numéro `hdmi_mode` dépend de la famille. Source : documentation Raspberry Pi, *legacy config.txt options*.
+
+| Valeur de `-m` | Famille | `hdmi_group` | `hdmi_mode` |
+|---|---|---|---|
+| `monitor_640x480_60hz` | moniteur (DMT) | 2 | 4 |
+| `monitor_800x600_60hz` | moniteur (DMT) | 2 | 9 |
+| `monitor_1024x768_60hz` | moniteur (DMT) | 2 | 16 |
+| `monitor_1280x1024_60hz` | moniteur (DMT) | 2 | 35 |
+| `tv_720p_60hz` | téléviseur (CEA) | 1 | 4 |
+| `tv_1080p_60hz` | téléviseur (CEA) | 1 | 16 |
 
 ### 1.5 Déroulement d'une génération
 
@@ -126,40 +155,46 @@ sudo losetup -d /dev/loop0
 rm -rf work_temp
 ```
 
-### 1.7 Profils `-x` utilisés dans `work/target/`
+### 1.7 Réglages des bornes
 
-| Profil | Borne | Scripts |
+Le générateur ne connaît aucune borne : les réglages d'affichage et de son sont des options, écrites dans chaque script de `work/target/`. Options utilisées aujourd'hui :
+
+| Borne | Options | Scripts |
 |---|---|---|
-| `borne_arcade_1_up` | Arcade1Up | `generate-pocky-rockey-snes-arcade1un.sh` |
-| `borne_pacman_mo5` | Borne Pac-Man MO5 | `generate-pacman-0.78-lf-mame2003.sh` |
-| `borne_rene_pierre` | Table cocktail René Pierre | `game_story_versailles_tetris_cocktail_mame2010.sh`, `game_story_versailles_spaceinvaders_II_cocktail_mame2003.sh` |
-| `pacman_GameStoryVersailles` | TV en sortie composite (Game Story Versailles) | `GameStoryVersailles_pacman-0.78-mame2003.sh`, `GameStoryVersailles_space-invaders-0.35b-lr-mame2003.sh` |
+| Arcade1Up | `--border left=20,right=20 --audio jack` | `generate-pocky-rockey-snes-arcade1un.sh` |
+| Borne Pac-Man MO5 | aucune | `generate-pacman-0.78-lf-mame2003.sh` |
+| Table cocktail René Pierre | `--rotate 90 --hdmi-mode monitor_800x600_60hz --audio jack` | `game_story_versailles_tetris_cocktail_mame2010.sh`, `game_story_versailles_spaceinvaders_II_cocktail_mame2003.sh` |
+| TV en sortie composite (Game Story Versailles) | `--tv-out pal` | `GameStoryVersailles_pacman-0.78-mame2003.sh`, `GameStoryVersailles_space-invaders-0.35b-lr-mame2003.sh` |
 
-Pour une nouvelle borne, ajoutez un bloc `if [[ "${specific_console}" == "<profil>" ]]` dans la fonction `apply_common_modifications_on_SD` de `generate-generic-image.sh`.
+Pour un nouveau jeu sur une borne existante, reprenez les options de ce tableau.
+
+**À vérifier sur la borne René Pierre :** la rotation est de 90° (`display_rotate=1`), mais d'anciens commentaires des scripts parlent de 270° (`display_rotate=3`).
+
+**Borne Pac-Man MO5 :** l'ancien profil prévoyait un viewport RetroArch de 366×476 px à x=149, y=5, pour compenser un écran décalé. Il n'a jamais eu d'effet, car les lignes visées n'existent pas dans l'image d'origine. Si l'écran fait 640×480, l'équivalent serait `--border left=149,right=125,top=5`, à essayer sur la borne.
 
 ### 1.8 Choisir les scanlines (`-l`)
 
 Choisissez selon l'orientation du **jeu d'origine**, pas selon l'écran de la borne :
 
-- **Jeu horizontal** (image plus large que haute) : `-l scanlines_horizontal`. Cela couvre toutes les consoles (NES, SNES, PC Engine…) et la plupart des jeux d'arcade.
-- **Jeu vertical** (image plus haute que large, l'écran de la borne d'arcade était monté tourné de 90°) : `-l scanlines_vertical`.
+- **Jeu horizontal** (image plus large que haute) : `-l horizontal`. Cela couvre toutes les consoles (NES, SNES, PC Engine…) et la plupart des jeux d'arcade.
+- **Jeu vertical** (image plus haute que large, l'écran de la borne d'arcade était monté tourné de 90°) : `-l vertical`.
 
-**Pourquoi.** Sur la borne d'origine, les lignes du tube cathodique suivaient toujours le grand côté du tube. Pour un jeu vertical, le moniteur était tourné, donc le joueur voyait des lignes **verticales**. `lr-mame2003` produit l'image d'un jeu vertical déjà dans le bon sens, en portrait. Le shader doit donc tracer ses lignes dans le sens des colonnes : c'est le rôle de `crt-pi-vertical`. La rotation de l'écran par `display_rotate` (profil `borne_rene_pierre`) s'applique ensuite à l'image entière, scanlines comprises. Elle ne change donc pas le choix.
+**Pourquoi.** Sur la borne d'origine, les lignes du tube cathodique suivaient toujours le grand côté du tube. Pour un jeu vertical, le moniteur était tourné, donc le joueur voyait des lignes **verticales**. `lr-mame2003` produit l'image d'un jeu vertical déjà dans le bon sens, en portrait. Le shader doit donc tracer ses lignes dans le sens des colonnes : c'est le rôle de `crt-pi-vertical`. La rotation de l'écran par `-R` (borne René Pierre) s'applique ensuite à l'image entière, scanlines comprises. Elle ne change donc pas le choix.
 
 **Jeux du dépôt.** Ce classement n'a pas été vérifié dans les fichiers ROM.
 
 | Jeu | Orientation | Option |
 |---|---|---|
-| Pac-Man, Space Invaders, Space Invaders II cocktail, Tetris cocktail (Atari), Kiki Kaikai (arcade) | Vertical | `scanlines_vertical` |
-| Astérix, Bubble Bobble, Snow Bros, Street Fighter II Turbo | Horizontal | `scanlines_horizontal` |
-| Donkey Kong NES, Pocky & Rocky, jeux PC Engine | Horizontal | `scanlines_horizontal` |
+| Pac-Man, Space Invaders, Space Invaders II cocktail, Tetris cocktail (Atari), Kiki Kaikai (arcade) | Vertical | `vertical` |
+| Astérix, Bubble Bobble, Snow Bros, Street Fighter II Turbo | Horizontal | `horizontal` |
+| Donkey Kong NES, Pocky & Rocky, jeux PC Engine | Horizontal | `horizontal` |
 
 **En cas de doute :**
 - dans MAME, un jeu vertical est marqué `ROT90` ou `ROT270` dans ses informations de pilote ; un jeu horizontal est marqué `ROT0` ;
 - à l'écran, regardez de près : sur un jeu vertical, les lignes doivent aller de haut en bas, telles que le joueur les voit. Si elles coupent les sprites dans le mauvais sens, changez d'option ;
 - exception : si on active le mode « TATE » de MAME, qui laisse l'image non tournée, la règle s'inverse. Ce mode n'est pas utilisé dans ce dépôt.
 
-Pour une sortie composite vers un téléviseur cathodique (`pacman_GameStoryVersailles`), n'utilisez pas `-l` : le téléviseur produit déjà ses propres scanlines.
+Pour une sortie composite vers un téléviseur cathodique (`-t`), n'utilisez pas `-l` : le téléviseur produit déjà ses propres scanlines.
 
 N'utilisez pas `-l` non plus pour les consoles portables à écran LCD (Game Boy…) : elles n'ont jamais eu de scanlines.
 
@@ -209,7 +244,7 @@ Les chemins sont donnés **relativement à la racine de l'image** :
 
 ### 3.1 Modifications communes (`-g` et `-s`)
 
-Elles sont faites par la fonction `apply_common_modifications_on_SD`. Certaines sont modifiées ou complétées par le profil `-x`.
+Elles sont faites par la fonction `apply_common_modifications_on_SD`. Certaines dépendent des options d'affichage et de son.
 
 #### `/boot/cmdline.txt` — démarrage silencieux
 
@@ -225,16 +260,11 @@ Lignes modifiées :
 
 | Changement | Condition |
 |---|---|
-| Décommente `#disable_overscan=1` → `disable_overscan=1` (pas de bordure noire) | Toujours **sauf** `-x pacman_GameStoryVersailles` |
-| `disable_overscan=1` → `disable_overscan=0` | `-x borne_arcade_1_up` |
-| `#overscan_left=16` → `overscan_left=20` | `-x borne_arcade_1_up` |
-| `#overscan_right=16` → `overscan_right=20` | `-x borne_arcade_1_up` |
-| `#overscan_top=16` → `overscan_top=0` | `-x borne_arcade_1_up` |
-| `#overscan_bottom=16` → `overscan_bottom=0` | `-x borne_arcade_1_up` |
+| Décommente `#disable_overscan=1` → `disable_overscan=1` (pas de bordure noire) | Toujours **sauf** avec `-t` |
 
-Pour `borne_arcade_1_up`, l'overscan est donc réactivé avec des marges de 20 px à gauche et à droite et sans marge en haut ni en bas. Cela donne un léger zoom vertical adapté à l'écran de la borne.
+Avec `-t` (sortie composite), `disable_overscan` reste commenté : le firmware applique son overscan par défaut, 32 px de chaque côté pour un mode télévision SD. Un téléviseur cathodique rogne lui-même les bords de l'image, et cette marge évite de perdre le bord du jeu.
 
-Avec `-r <pourcentage>:<largeur>x<hauteur>[:<alignement>]`, toutes les lignes `disable_overscan`, `overscan_left`, `overscan_right`, `overscan_top`, `overscan_bottom` et `overscan_scale` existantes, commentées ou non, sont supprimées. Ces lignes sont ensuite ajoutées à la fin du fichier, et remplacent donc l'overscan d'un profil `-x` :
+Avec `-r <pourcentage>:<largeur>x<hauteur>[:<alignement>]` ou `-b <bordures>`, toutes les lignes `disable_overscan`, `overscan_left`, `overscan_right`, `overscan_top`, `overscan_bottom` et `overscan_scale` existantes, commentées ou non, sont supprimées. Ces lignes sont ensuite ajoutées à la fin du fichier :
 
 ```
 disable_overscan=0
@@ -245,7 +275,7 @@ overscan_bottom=<marge bas>
 overscan_scale=1
 ```
 
-Sans alignement, chaque marge vaut `largeur × pourcentage / 200` (gauche et droite) ou `hauteur × pourcentage / 200` (haut et bas), arrondi au pixel. Par exemple, `-r 5:1024x768` donne 26 px à gauche et à droite et 19 px en haut et en bas. Un alignement met toute la marge du côté opposé : avec `-r 5:1024x768:bas`, la marge haute vaut 38 px et la marge basse 0, et l'image reste centrée horizontalement. Avec `bas-gauche`, on a en plus 0 à gauche et 52 px à droite. `overscan_scale=1` applique aussi la réduction à l'image de RetroArch.
+Avec `-b`, les marges sont celles données en pixels. Avec `-r` sans alignement, chaque marge vaut `largeur × pourcentage / 200` (gauche et droite) ou `hauteur × pourcentage / 200` (haut et bas), arrondi au pixel. Par exemple, `-r 5:1024x768` donne 26 px à gauche et à droite et 19 px en haut et en bas. Un alignement met toute la marge du côté opposé : avec `-r 5:1024x768:bottom`, la marge haute vaut 38 px et la marge basse 0, et l'image reste centrée horizontalement. Avec `bottom-left`, on a en plus 0 à gauche et 52 px à droite. `overscan_scale=1` applique aussi la réduction à l'image de RetroArch.
 
 Lignes ajoutées à la fin du fichier, dans cet ordre :
 
@@ -255,12 +285,11 @@ Lignes ajoutées à la fin du fichier, dans cet ordre :
 | `avoid_warnings=1` | Masque les icônes de sous-tension / surchauffe | Toujours |
 | `boot_delay=0` | Supprime l'attente du firmware avant le chargement du noyau | Toujours |
 | `dtoverlay=disable-bt` | Désactive le Bluetooth | Toujours |
-| `display_rotate=1` | Rotation de l'affichage de 90° (écran vertical) | `-x borne_rene_pierre` |
-| `hdmi_group=2` | Mode HDMI de type DMT (moniteur) | `-x borne_rene_pierre` |
-| `hdmi_mode=9` | 800×600 à 60 Hz, 4:3 | `-x borne_rene_pierre` |
-| `enable_tvout=1` | Active la sortie vidéo composite | `-x pacman_GameStoryVersailles` |
-| `sdtv_mode=2` | Sortie composite en PAL | `-x pacman_GameStoryVersailles` |
-| `sdtv_aspect=1` | Format 4:3 | `-x pacman_GameStoryVersailles` |
+| `display_rotate=1`, `2` ou `3` | Rotation de l'affichage de 90°, 180° ou 270° dans le sens horaire | `-R 90`, `-R 180` ou `-R 270` |
+| `hdmi_group=…` et `hdmi_mode=…` | Mode HDMI forcé (voir le tableau des modes au [§1.4](#14-appeler-directement-le-script)) | `-m <mode HDMI>` |
+| `enable_tvout=1` | Active la sortie vidéo composite | `-t` |
+| `sdtv_mode=2` ou `0` | Sortie composite en PAL ou en NTSC | `-t pal` ou `-t ntsc` |
+| `sdtv_aspect=1` | Format 4:3 | `-t` |
 
 #### `/boot/ssh` — accès SSH
 
@@ -280,13 +309,6 @@ Lignes ajoutées à la fin du fichier, dans cet ordre :
 | Changement | Condition |
 |---|---|
 | Les lignes `video_font_enable` existantes, commentées ou non, sont supprimées, puis `video_font_enable = "false"` est ajouté à la fin du fichier (pas de messages à l'écran) | Toujours |
-| Ligne `aspect_ratio_index` : `19` → `22` (ratio personnalisé « Custom ») | `-x borne_pacman_mo5` |
-| Ligne `custom_viewport_width` : décommentée, `0` → `"366"` | `-x borne_pacman_mo5` |
-| Ligne `custom_viewport_height` : décommentée, `0` → `"476"` | `-x borne_pacman_mo5` |
-| Ligne `custom_viewport_x` : décommentée, `0` → `"149"` | `-x borne_pacman_mo5` |
-| Ligne `custom_viewport_y` : décommentée, `0` → `"5"` | `-x borne_pacman_mo5` |
-
-Pour `borne_pacman_mo5`, l'intention est que l'image du jeu occupe une zone de 366×476 px, placée à x=149 et y=5, pour compenser l'écran légèrement décalé de la borne. **Mais sur l'image d'origine actuelle, ces remplacements n'ont aucun effet** : la ligne est `# aspect_ratio_index = 20` (et non `19`), et aucune ligne `custom_viewport_*` n'existe dans le fichier. RetroArch garde donc son affichage par défaut.
 
 #### `/opt/retropie/configs/all/retroarch.cfg` — configuration RetroArch commune
 
@@ -296,8 +318,8 @@ Pour `borne_pacman_mo5`, l'intention est que l'image du jeu occupe une zone de 3
 | Les lignes `video_smooth` existantes, commentées ou non, sont supprimées, puis `video_smooth = "false"` est ajouté à la fin du fichier (pixels nets) | `-n` ou `-l` |
 
 Sans `-n` ni `-l`, `video_smooth` n'est pas modifié : RetroArch garde son réglage par défaut, le lissage bilinéaire.
-| Les lignes `video_shader_enable` et `video_shader` existantes, commentées ou non, sont supprimées, puis ces lignes sont ajoutées à la fin du fichier :<br>`video_shader_enable = "true"`<br>`video_shader = "/opt/retropie/configs/all/retroarch/shaders/crt-pi.glslp"` | `-l scanlines_horizontal` |
-| Même chose avec `video_shader = "/opt/retropie/configs/all/retroarch/shaders/crt-pi-vertical.glslp"` | `-l scanlines_vertical` |
+| Les lignes `video_shader_enable` et `video_shader` existantes, commentées ou non, sont supprimées, puis ces lignes sont ajoutées à la fin du fichier :<br>`video_shader_enable = "true"`<br>`video_shader = "/opt/retropie/configs/all/retroarch/shaders/crt-pi.glslp"` | `-l horizontal` |
+| Même chose avec `video_shader = "/opt/retropie/configs/all/retroarch/shaders/crt-pi-vertical.glslp"` | `-l vertical` |
 
 Avec `-l`, le script vérifie que le fichier `.glslp` existe dans l'image. S'il est absent, il s'arrête et démonte l'image sans produire de résultat.
 
@@ -311,9 +333,9 @@ Avec `-l`, le script vérifie que le fichier `.glslp` existe dans l'image. S'il 
 
 | Changement | Condition |
 |---|---|
-| Le fichier est **écrasé** avec :<br>`pcm.!default {type hw card 1}`<br>`ctl.!default {type hw card 1}`<br>Le son passe par la carte 1 (jack) au lieu de la carte 0 (HDMI) | `-x borne_arcade_1_up` **ou** `-x borne_rene_pierre` |
+| Le fichier est **écrasé** avec :<br>`pcm.!default {type hw card 1}`<br>`ctl.!default {type hw card 1}`<br>Le son passe par la carte 1 (jack) au lieu de la carte 0 (HDMI) | `-a jack` |
 
-Sans l'un de ces profils, le fichier n'est pas touché.
+Sans `-a jack`, le fichier n'est pas touché.
 
 #### Messages console
 
@@ -385,7 +407,7 @@ Pour qu'aucun choix d'émulateur ne puisse jamais apparaître, il est préférab
 
 | Changement | Condition |
 |---|---|
-| Le répertoire donné est copié récursivement vers `/home/pi/RetroPie/roms/<système>/samples` (propriétaire : celui de `roms`) | `-p <répertoire>` |
+| Le répertoire donné est copié récursivement vers `/home/pi/RetroPie/roms/<système>/samples` (propriétaire : celui de `roms`) | `-S <répertoire>` |
 
 #### Manette
 
@@ -397,15 +419,12 @@ Pour qu'aucun choix d'émulateur ne puisse jamais apparaître, il est préférab
 
 Ces remarques viennent de la lecture du script. Elles ne changent pas son comportement, mais elles aident à comprendre le résultat.
 
-- **Profil `pacman_GameStoryVersailles` :** `disable_overscan` reste commenté, donc l'overscan par défaut du firmware s'applique. C'est voulu pour la sortie composite sur un téléviseur. Avec `-r`, cet overscan par défaut est remplacé par les marges calculées.
-- **Profil `borne_pacman_mo5` :** ses réglages RetroArch n'ont aucun effet sur l'image d'origine actuelle (voir [§3.1](#31-modifications-communes--g-et--s)). Le script ne décommente pas `aspect_ratio_index`, cherche la valeur `19` alors que la ligne vaut `20`, et les lignes `custom_viewport_*` n'existent pas.
-- **Viewport :** ce réglage est fait dans `/opt/retropie/emulators/retroarch/retroarch.cfg`, qui est le fichier par défaut de RetroArch. Ce n'est pas `/opt/retropie/configs/all/retroarch.cfg`, le fichier lu en priorité par RetroPie.
+- **`display_rotate` :** la documentation Raspberry Pi le dit obsolète au profit de `display_hdmi_rotate`. Il fonctionne avec le firmware de l'image d'origine (RetroPie sur Raspberry Pi OS Buster). Les options `config.txt` de ce type ne fonctionnent plus à partir de Raspberry Pi OS Bookworm.
 - **Pas de fichier d'échange :** `dphys-swapfile` est désactivé. Sur un Pi 3 (1 Go), c'est sans conséquence pour ces jeux. Sur un Pi Zero 2 W (512 Mo), un émulateur gourmand en mémoire (par ex. `lr-mame2010`) pourrait manquer de mémoire. À tester sur la borne.
 - **Plus de partage Samba ni de `retropie.local` :** pour accéder à la borne, utilisez SSH avec son adresse IP.
-- **Remplacements larges :** les `sed` du profil `borne_pacman_mo5` (`s/#//g`, `s/0/.../g`) portent sur **toute la ligne**. Une ligne qui contient plusieurs `#` ou plusieurs `0` est entièrement modifiée.
-- **Remplacements limités :** les remplacements de `cmdline.txt`, de l'overscan et des noms dans `autostart.sh` ne portent que sur la **première** occurrence trouvée dans le fichier (`sed '0,/motif/ s//.../'`). L'option `-r` fait exception : elle supprime toutes les lignes d'overscan avant d'ajouter les siennes.
+- **Remplacements limités :** les remplacements de `cmdline.txt`, de l'overscan et des noms dans `autostart.sh` ne portent que sur la **première** occurrence trouvée dans le fichier (`sed '0,/motif/ s//.../'`). Les options `-r` et `-b` font exception : elles suppriment toutes les lignes d'overscan avant d'ajouter les leurs.
 - **Scanlines et `video_smooth` :** avec `-l`, le lissage est désactivé, car il rendrait les lignes floues. Le choix du shader dépend de l'orientation du jeu d'origine, pas de celle de l'écran (voir [§1.8](#18-choisir-les-scanlines--l)).
-- **Scanlines et sortie composite :** `-l` est déconseillé avec `pacman_GameStoryVersailles`. Un téléviseur cathodique produit déjà ses propres scanlines.
+- **Scanlines et sortie composite :** `-l` est déconseillé avec `-t`. Un téléviseur cathodique produit déjà ses propres scanlines.
 
 ---
 
@@ -438,7 +457,7 @@ L'utilisateur est `pi`. Le mot de passe par défaut de RetroPie est `raspberry`,
 |---|---|
 | `/opt/retropie/configs/all/retroarch.cfg` | Réglages RetroArch **communs à tous les systèmes** : lissage, shader, messages à l'écran… |
 | `/opt/retropie/configs/<système>/retroarch.cfg` | Réglages **propres à un système**. Ils ne sont pris en compte que s'ils sont placés **au-dessus** de la ligne `#include "/opt/retropie/configs/all/retroarch.cfg"` |
-| `/opt/retropie/emulators/retroarch/retroarch.cfg` | Configuration par défaut de RetroArch. Le profil `borne_pacman_mo5` est censé y régler le viewport (sans effet actuellement) |
+| `/opt/retropie/emulators/retroarch/retroarch.cfg` | Configuration par défaut de RetroArch |
 | `/opt/retropie/configs/all/retroarch-core-options.cfg` | Options des émulateurs (cores) : palette Game Boy, réglages MAME… |
 | `/opt/retropie/configs/all/retroarch/autoconfig/` | Configurations des manettes (`.cfg`). `/opt/retropie/configs/all/retroarch-joypads` est un lien vers ce répertoire |
 | `/opt/retropie/configs/all/retroarch/shaders/` | Shaders, dont `crt-pi.glslp` et `crt-pi-vertical.glslp` (option `-l`) |

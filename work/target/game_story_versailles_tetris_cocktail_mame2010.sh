@@ -1,13 +1,15 @@
-echo "generation of Tetris Cocktail specific SD card"
-echo "../../source/generate-image/generate-generic-image.sh -d -i ../origin/origin.img -o tetris.cocktail.mame2010.img -s ../origin/game-to-install/arcade/atetrisc.zip -c \"../origin/game-to-install/arcade/DragonRise Inc.   Generic   USB  Joystick  .cfg\" -e lr-mame2010 -x borne_rene_pierre"
-../../source/generate-image/generate-generic-image.sh -d -i ../origin/origin.img -o tetris.cocktail.mame2010.img -s ../origin/game-to-install/arcade/atetrisc.zip -c "../origin/game-to-install/arcade/DragonRise Inc.   Generic   USB  Joystick  .cfg" -e lr-mame2010 -x borne_rene_pierre
-# ajout du son par la sortie jack
+# borne René Pierre (cocktail) : écran tourné de 90° (display_rotate=1), moniteur VGA 800x600, son sur la prise jack
 
-# /boot/config.txt
-# uncomment to force a specific HDMI mode (this will force VGA)
-#hdmi_group=2
-#hdmi_mode=9
-# ajout d'une ligne
-#display_rotate=3 ou 1
-# installer le core mame 0.139 pour Tetris
-# sudo ./retropie_packages.sh lr-mame2010 install
+# installer le core mame 0.139 pour Tetris : sudo ./retropie_packages.sh lr-mame2010 install
+
+../../source/generate-image/generate-generic-image.sh \
+    --input ../origin/origin.img \
+    --output tetris.cocktail.mame2010.img \
+    --specific ../origin/game-to-install/arcade/atetrisc.zip \
+    --controller "../origin/game-to-install/arcade/DragonRise Inc.   Generic   USB  Joystick  .cfg" \
+    --emulator lr-mame2010 \
+    --rotate 90 \
+    --hdmi-mode monitor_800x600_60hz \
+    --audio jack \
+    2>&1 \
+    | tee

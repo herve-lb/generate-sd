@@ -1,9 +1,8 @@
 ../../source/generate-image/generate-generic-image.sh \
-    -d \
-    -i ../origin/origin.img \
-    -o donkey-kong-world-arcade-version-nes-emul.img \
-    -s "../origin/game-to-install/nes/Donkey Kong - Original Edition (USA, Europe) (3DS Virtual Console).nes" \
-    -c "../origin/game-to-install/nes/Mega World.cfg" \
-    -l scanlines_horizontal \
+    --input ../origin/origin.img \
+    --output donkey-kong-world-arcade-version-nes-emul.img \
+    --specific "../origin/game-to-install/nes/Donkey Kong - Original Edition (USA, Europe) (3DS Virtual Console).nes" \
+    --controller "../origin/game-to-install/nes/Mega World.cfg" \
+    --scanlines horizontal \
     2>&1 \
     | tee

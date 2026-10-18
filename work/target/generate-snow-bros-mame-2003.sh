@@ -1,2 +1,8 @@
-echo "generation of Snow Bros specific SD card"
-../../source/generate-image/generate-generic-image.sh -d -i ../origin/origin.img -o snowbros.mame.2003.img -s ../origin/game-to-install/arcade/snowbros.zip -c ../origin/game-to-install/arcade/Mega\ World.cfg -e lr-mame2003
+../../source/generate-image/generate-generic-image.sh \
+    --input ../origin/origin.img \
+    --output snowbros.mame.2003.img \
+    --specific ../origin/game-to-install/arcade/snowbros.zip \
+    --controller "../origin/game-to-install/arcade/Mega World.cfg" \
+    --emulator lr-mame2003 \
+    2>&1 \
+    | tee

@@ -1,2 +1,11 @@
-echo "../../source/generate-image/generate-generic-image.sh -d -i ../origin/origin.img -o pocky-rocky-snes-arcade1up.img -s ../origin/game-to-install/snes/Pocky-Rocky.smc -c ../origin/game-to-install/nes/USB-gamepad.cfg -x -x \"borne_arcade_1_up\""
-../../source/generate-image/generate-generic-image.sh -d -i ../origin/origin.img -o pocky-rocky-snes-arcade1up.img -s ../origin/game-to-install/snes/Pocky-Rocky.smc -c ../origin/game-to-install/nes/USB-gamepad.cfg -x "borne_arcade_1_up"
+# borne Arcade1Up : bordures de 20 px à gauche et à droite, son sur la prise jack
+
+../../source/generate-image/generate-generic-image.sh \
+    --input ../origin/origin.img \
+    --output pocky-rocky-snes-arcade1up.img \
+    --specific ../origin/game-to-install/snes/Pocky-Rocky.smc \
+    --controller ../origin/game-to-install/nes/USB-gamepad.cfg \
+    --border left=20,right=20 \
+    --audio jack \
+    2>&1 \
+    | tee

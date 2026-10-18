@@ -1,7 +1,15 @@
-echo "generation of space invaders II (Midway Cocktail 1980) specific SD card"
-echo "../../source/generate-image/generate-generic-image.sh -d -i ../origin/origin.img -o space.ivaders.II.cocktail.mame2003.img -s ../origin/game-to-install/arcade/invad2ct.zip -c \"../origin/game-to-install/arcade/DragonRise Inc.   Generic   USB  Joystick  .cfg\" -e lr-mame2003 -x borne_rene_pierre"
-../../source/generate-image/generate-generic-image.sh -d -i ../origin/origin.img -o space.ivaders.II.cocktail.mame2003.img -s ../origin/game-to-install/arcade/invad2ct.zip -c "../origin/game-to-install/arcade/DragonRise Inc.   Generic   USB  Joystick  .cfg" -e lr-mame2003 -x borne_rene_pierre
-# ajout d'une ligne display_rotate=3
-# affectation de la fct tir sur chaque bouton
+# borne René Pierre (cocktail) : écran tourné de 90° (display_rotate=1), moniteur VGA 800x600, son sur la prise jack
 
+# affectation de la fonction tir sur chaque bouton
 
+../../source/generate-image/generate-generic-image.sh \
+    --input ../origin/origin.img \
+    --output space.ivaders.II.cocktail.mame2003.img \
+    --specific ../origin/game-to-install/arcade/invad2ct.zip \
+    --controller "../origin/game-to-install/arcade/DragonRise Inc.   Generic   USB  Joystick  .cfg" \
+    --emulator lr-mame2003 \
+    --rotate 90 \
+    --hdmi-mode monitor_800x600_60hz \
+    --audio jack \
+    2>&1 \
+    | tee
